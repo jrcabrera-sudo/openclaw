@@ -1688,13 +1688,17 @@ export async function runCodexAppServerAttempt(
     return notificationQueue;
   };
 
+  const nativeSubagentCodexHome =
+    appServer.start.transport === "stdio"
+      ? (appServer.start.env?.CODEX_HOME ?? resolveCodexAppServerHomeDir(agentDir))
+      : undefined;
   registerCodexNativeSubagentMonitor({
     client,
     parentThreadId: thread.threadId,
     requesterSessionKey: params.sessionKey,
     taskRuntimeScope: params.agentHarnessTaskRuntimeScope,
     agentId: params.agentId,
-    codexHome: appServer.start.env?.CODEX_HOME ?? resolveCodexAppServerHomeDir(agentDir),
+    codexHome: nativeSubagentCodexHome,
   });
   const notificationCleanup = client.addNotificationHandler(enqueueNotification);
   const requestCleanup = client.addRequestHandler(async (request) => {
@@ -1846,6 +1850,7 @@ export async function runCodexAppServerAttempt(
           toolBridge,
           signal: runAbortController.signal,
           timeoutMs: dynamicToolTimeoutMs,
+          onAgentToolResult: params.onAgentToolResult,
           onTimeout: () => {
             trajectoryRecorder?.recordEvent("tool.timeout", {
               threadId: call.threadId,

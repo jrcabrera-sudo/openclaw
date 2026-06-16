@@ -2,6 +2,30 @@
 
 Docs: https://docs.openclaw.ai
 
+## 2026.6.9
+
+### Highlights
+
+- Channel delivery is steadier across WhatsApp GIF/media placeholders, Telegram rich progress and media directives, QQBot cron voice sends, Feishu card replies, Discord ingress/search, Matrix mentions, Mattermost mentions, and generated reply preservation. (#93679, #93698, #93690, #92947, #93618, #93449, #93407, #88796, #83156, #93242, #93629) Thanks @liuhao1024, @obviyus, @ZengWen-DT, @mgunnin, @SebTardif, @wdx-agent-io, @iloveleon19, and @lzyyzznl.
+- Agent, Gateway, and session recovery paths now surface Codex app-server failures, route approval notices with write scope, bootstrap plugin session targets, preserve prompt-released and failed-turn history, recover stale transcripts on reset, and keep assistant string content readable. (#93665, #93656, #93630, #93646, #89483, #93194, #93496) Thanks @litang9, @mushuiyu886, @ZengWen-DT, @Alix-007, @IWhatsskill, @snowzlm, and @harjothkhara.
+- Provider and plugin surfaces gained Codex hosted web search, remote-node Codex dynamic tools, Google Meet realtime provider secret inputs, Qwen image prompt placement, Bedrock embedding model normalization, key-free web-search opt-in behavior, and externally installed channel plugin startup loading. (#93446, #93654, #93677, #93649, #93452, #93616, #93470) Thanks @fuller-stack-dev, @goutamadwant, @LiuwqGit, @davemorin, and @sunlit-deng.
+- UI, onboarding, update, and setup flows preserve default models during auth setup, copy Control UI code blocks over plain HTTP, clear stale Talk errors, keep WebChat replies from double-rendering, preserve CJK IME composition, skip unsupported Homebrew prompts, and avoid per-Node npm prefixes during self-update. (#93658, #93666, #93606, #93298, #93498, #93521, #93650) Thanks @ml12580, @Pick-cat, @liuhao1024, @zhangguiping-xydt, and @Zhaoqj2016.
+
+### Changes
+
+- Add compact cron list responses and isolated model-usage diagnostics for scheduled runs. (#93395, #93398) Thanks @yu-xin-c and @849261680.
+- Add Codex hosted web search and expose remote-node execution as a Codex dynamic tool while keeping key-free web-search providers opt-in. (#93446, #93654, #93616) Thanks @fuller-stack-dev and @davemorin.
+- Add iOS watch action surfaces and refresh Android/iOS release upload metadata paths for mobile release preparation. (#93387) Thanks @Solvely-Colin and @joshavant.
+
+### Fixes
+
+- Channels: preserve unsent text-only finals after streamed partial content, recover lone Telegram spool handlers on timeout, bind Telegram bot mentions to assistant identity, hydrate Telegram group reply-chain media, preserve Mattermost Codex progress previews, bound WhatsApp read-receipt stalls, and distinguish WhatsApp GIF playback placeholders. (#93629, #93615, #93088, #93575, #93476, #93303, #93679) Thanks @liuhao1024, @0xghost42, @kesslerio, @eldar702, @goutamadwant, and @Alix-007.
+- Gateway, agents, and CLI: surface Codex app-server failures, compute usage totals across all sessions, accept `--log-level` after subcommands, skip compile cache on early Node 24.x, honor embedded-run default models, and preserve aborted isolated-run failures. (#93665, #93612, #93455, #89799, #93439, #93471) Thanks @litang9, @liuhao1024, @ooiuuii, @zhangguiping-xydt, @harjothkhara, and @BhargavSatya.
+- Providers and plugins: keep Google Meet realtime secret inputs declared, place DashScope image prompts in user content, strip Bedrock inference profile prefixes for embeddings, resolve provider policy for plugin-owned CLI backends, and allow Dreaming sidecars through restrictive memory allowlists. (#93677, #93649, #93452, #93261, #93678) Thanks @goutamadwant, @LiuwqGit, and @BitmapAsset.
+- Skills, memory, and doctor: preserve ClawHub origin provenance on readback, clear corrupt skill idempotency pointers, report skipped QMD embedding probes, archive superseded plugin install index conflicts, and repair null `agents.list[].workspace` values. (#93314, #93509, #93473, #93648, #93105) Thanks @Alix-007, @TurboTheTurtle, and @xydigit-sj.
+- Security and policy: audit open-DM tool exposure, redact secrets in `/debug` output, avoid parent group allowlist false positives, and keep externally installed channel plugins loaded at Gateway startup. (#92883, #93333, #93434, #93470) Thanks @yu-xin-c, @Alix-007, @kingrubic, and @sunlit-deng.
+- Runtime and tooling: rewrite pnpm versioned entry paths to stable wrappers, summarize cleanup dry-runs by label, route text decoding through the shared Windows codepage fallback, and keep root-owned service commands out of stale sudo scope. (#93671, #93565, #93555, #93693) Thanks @liuhao1024, @AgentArcLab, and @zhanxingxin1998.
+
 ## 2026.6.8
 
 ### Highlights
@@ -38,6 +62,7 @@ Docs: https://docs.openclaw.ai
 - TUI: reload the active session after external `/new` or `/reset` session-change events so stale transcript and stream state clear promptly. Fixes #38966; carries forward #40472. Thanks @yizhanzjz and @wsyjh8.
 - Control UI: preserve Gateway Access tokens during same-normalized WebSocket URL edits and reload gateway-scoped tokens when switching endpoints. Fixes #41545; repairs #42001 with additional source PRs #41546, #41552, and #41718. Thanks @wsyjh8, @llagy0020, @llagy007, @pingfanfan, and @zheliu2.
 - Gateway CLI: tolerate a single transient clean WebSocket close before `hello-ok` so one-shot RPC calls reconnect instead of failing noisily, while repeated clean pre-hello closes still surface. Carries forward source PRs #54475 and #54774; #85253 covered adjacent connect assembly diagnostics. Thanks @ruanrrn.
+- Gateway/Linux: keep root-owned systemd user service lifecycle commands on root's user manager when a stale `SUDO_USER` remains in a root shell with root's user bus environment. Fixes #81410. Thanks @Ericksza and @ChuckClose-tech.
 - Release and test reliability: extend slow Gateway/full-suite watchdogs, split local full-suite shards when throttled, stabilize plugin auth marker fixtures, avoid brittle provider-ref error text, and keep QA Lab bootstrap selection assertions aligned with flow-only scenarios. (#92652)
 - macOS Peekaboo bridge: update the embedded Peekaboo package to 3.5.2 and route bundled-skill CLI commands through the OpenClaw app bridge so they inherit its Screen Recording and Accessibility grants.
 - Agent routing: route subagent RPC callbacks addressed to an agent-shaped `--to` target to the correct session key instead of falling back to the main session, so WeChat (and other channel) session-key callbacks reach the intended subagent session. (#90231) Thanks @zhangguiping-xydt.

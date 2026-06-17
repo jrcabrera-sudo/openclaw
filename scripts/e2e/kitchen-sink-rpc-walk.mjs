@@ -2,6 +2,7 @@
 import childProcess from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
@@ -30,7 +31,6 @@ const DEFAULT_MAX_COMMAND_RSS_MIB = 8192;
 const DEFAULT_OUTPUT_CAPTURE_CHARS = 1024 * 1024;
 const GATEWAY_TEARDOWN_GRACE_MS = 10000;
 const GATEWAY_TEARDOWN_KILL_GRACE_MS = 2000;
-const DEFAULT_PORT = 19000 + Math.floor(Math.random() * 1000);
 const LOG_SCAN_CHUNK_BYTES = 64 * 1024;
 const LOG_SCAN_MAX_LINE_CHARS = 16 * 1024;
 const LOG_TAIL_BYTES = 256 * 1024;
@@ -65,12 +65,17 @@ Environment:
   OPENCLAW_ENTRY                         Built OpenClaw entrypoint. Defaults to dist/index.mjs or dist/index.js.
   OPENCLAW_KITCHEN_SINK_NPM_SPEC         Plugin package spec. Default: npm:@openclaw/kitchen-sink@latest.
   OPENCLAW_KITCHEN_SINK_PLUGIN_ID        Plugin id. Default: openclaw-kitchen-sink-fixture.
+  OPENCLAW_KITCHEN_SINK_PERSONALITY      Plugin fixture personality. Default: conformance.
+  OPENCLAW_KITCHEN_SINK_RPC_PORT         Gateway loopback port. Default: OS-selected free port.
   OPENCLAW_KITCHEN_SINK_RPC_READY_MS     Gateway readiness timeout.
   OPENCLAW_KITCHEN_SINK_RPC_COMMAND_MS   OpenClaw command timeout.
   OPENCLAW_KITCHEN_SINK_RPC_INSTALL_MS   Plugin install timeout.
   OPENCLAW_KITCHEN_SINK_RPC_CALL_MS      RPC call timeout.
+  OPENCLAW_KITCHEN_SINK_RPC_FETCH_MS     HTTP readiness probe timeout.
+  OPENCLAW_KITCHEN_SINK_RPC_FETCH_BODY_BYTES  HTTP readiness probe response ceiling.
   OPENCLAW_KITCHEN_SINK_MAX_RSS_MIB      Gateway RSS ceiling.
   OPENCLAW_KITCHEN_SINK_COMMAND_MAX_RSS_MIB  Install/CLI command RSS ceiling.
+  OPENCLAW_KITCHEN_SINK_OUTPUT_CAPTURE_CHARS  Per-command stdout/stderr capture ceiling.
   OPENCLAW_KITCHEN_SINK_KEEP_TMP=1       Preserve the isolated temp home.
 `;
 }
@@ -143,6 +148,42 @@ export function resolveKitchenSinkRpcConfig(env = process.env) {
       "OPENCLAW_KITCHEN_SINK_RPC_CALL_MS",
     ),
   };
+}
+
+export async function findAvailableLoopbackPort(options = {}) {
+  const createServer = options.createServer ?? (() => net.createServer());
+  const server = createServer();
+  return await new Promise((resolve, reject) => {
+    const fail = (error) => {
+      server.close?.(() => {});
+      reject(toLintErrorObject(error, "Unable to reserve Kitchen Sink RPC loopback port"));
+    };
+    server.once("error", fail);
+    server.listen(0, "127.0.0.1", () => {
+      server.off?.("error", fail);
+      const address = server.address();
+      const port = typeof address === "object" && address ? address.port : 0;
+      server.close((error) => {
+        if (error) {
+          reject(toLintErrorObject(error, "Unable to close Kitchen Sink RPC loopback port"));
+          return;
+        }
+        if (!Number.isSafeInteger(port) || port <= 0) {
+          reject(new Error(`unable to reserve Kitchen Sink RPC loopback port: ${String(port)}`));
+          return;
+        }
+        resolve(port);
+      });
+    });
+  });
+}
+
+export async function resolveKitchenSinkRpcPort(env = process.env, options = {}) {
+  const rawPort = (env.OPENCLAW_KITCHEN_SINK_RPC_PORT || "").trim();
+  if (rawPort) {
+    return readPositiveInt(rawPort, 0, "OPENCLAW_KITCHEN_SINK_RPC_PORT");
+  }
+  return await (options.findAvailablePort ?? findAvailableLoopbackPort)();
 }
 
 function resolveOpenClawRunner() {
@@ -980,7 +1021,8 @@ async function startGateway(runner, port, env, logPath) {
 }
 
 export async function stopGateway(child, options = {}) {
-  if (!child || hasChildExited(child)) {
+  const killProcess = options.killProcess ?? defaultKillProcess;
+  if (!child || !isGatewayAlive(child, killProcess)) {
     return;
   }
   const teardownGraceMs = Math.max(0, options.teardownGraceMs ?? GATEWAY_TEARDOWN_GRACE_MS);
@@ -988,18 +1030,21 @@ export async function stopGateway(child, options = {}) {
   const exited = new Promise((resolve) => {
     child.once("exit", resolve);
   });
-  const waitForExit = async (ms) =>
-    hasChildExited(child)
-      ? true
-      : await Promise.race([exited.then(() => true), delay(ms).then(() => false)]);
+  const waitForExit = async (ms) => {
+    if (!isGatewayAlive(child, killProcess)) {
+      return true;
+    }
+    await Promise.race([exited, delay(ms)]);
+    return !isGatewayAlive(child, killProcess);
+  };
 
-  if (!signalGateway(child, "SIGTERM")) {
+  if (!signalGateway(child, "SIGTERM", killProcess)) {
     return;
   }
   if (await waitForExit(teardownGraceMs)) {
     return;
   }
-  if (!signalGateway(child, "SIGKILL")) {
+  if (!signalGateway(child, "SIGKILL", killProcess)) {
     return;
   }
   if (await waitForExit(killGraceMs)) {
@@ -1010,6 +1055,25 @@ export async function stopGateway(child, options = {}) {
 
 export function hasChildExited(child) {
   return child.exitCode !== null || child.signalCode !== null;
+}
+
+function defaultKillProcess(pid, signal) {
+  return process.kill(pid, signal);
+}
+
+function isGatewayAlive(child, killProcess) {
+  if (process.platform !== "win32" && typeof child.pid === "number") {
+    try {
+      killProcess(-child.pid, 0);
+      return true;
+    } catch (error) {
+      if (error?.code === "ESRCH") {
+        return false;
+      }
+      throw error;
+    }
+  }
+  return !hasChildExited(child);
 }
 
 function createChildExitPromise(child) {
@@ -1028,10 +1092,10 @@ function releaseUnsettledGatewayChild(child) {
   child.unref?.();
 }
 
-function signalGateway(child, signal) {
+function signalGateway(child, signal, killProcess = defaultKillProcess) {
   if (process.platform !== "win32" && typeof child.pid === "number") {
     try {
-      process.kill(-child.pid, signal);
+      killProcess(-child.pid, signal);
       return true;
     } catch (error) {
       if (error?.code === "ESRCH") {
@@ -1677,12 +1741,20 @@ async function samplePosixProcessWithDescendants(pid, run) {
     const { stdout } = await run("ps", POSIX_PROCESS_SNAPSHOT_ARGS, {
       timeoutMs: 5000,
     });
-    const rows = parsePosixProcessRows(stdout);
+    const snapshot = parsePosixProcessRows(stdout);
+    if (!snapshot) {
+      return null;
+    }
+    const { malformedRows, rows } = snapshot;
     const selected = rows.find((row) => row.processId === safePid);
     if (!selected) {
       return null;
     }
-    return formatPosixProcessTreeSample(selected, collectPosixProcessTree(rows, safePid));
+    const treeRows = collectPosixProcessTree(rows, safePid);
+    if (hasMalformedProcessTreeRows(malformedRows, treeRows)) {
+      return null;
+    }
+    return formatPosixProcessTreeSample(selected, treeRows);
   } catch {
     return null;
   }
@@ -1697,10 +1769,16 @@ async function samplePosixProcessTree(pid, run, commandLineNeedles) {
     const { stdout } = await run("ps", POSIX_PROCESS_SNAPSHOT_ARGS, {
       timeoutMs: 5000,
     });
-    const rows = parsePosixProcessRows(stdout);
-    const descendants = collectPosixProcessTree(rows, safePid).filter(
-      (row) => row.processId !== safePid,
-    );
+    const snapshot = parsePosixProcessRows(stdout);
+    if (!snapshot) {
+      return null;
+    }
+    const { malformedRows, rows } = snapshot;
+    const rootTreeRows = collectPosixProcessTree(rows, safePid);
+    if (hasMalformedProcessTreeRows(malformedRows, rootTreeRows)) {
+      return null;
+    }
+    const descendants = rootTreeRows.filter((row) => row.processId !== safePid);
     const commandMatches = descendants.filter((row) =>
       commandLineNeedles.every((needle) =>
         row.command.toLowerCase().includes(needle.toLowerCase()),
@@ -1729,34 +1807,74 @@ async function samplePosixProcessTree(pid, run, commandLineNeedles) {
 }
 
 function parsePosixProcessRows(stdout) {
-  return stdout
-    .split(/\r?\n/u)
-    .map((line) => {
-      const match = line.match(/^\s*(\d+)\s+(\d+)\s+(\d+)\s+([0-9.]+)\s+(.*)$/u);
-      if (!match) {
-        return null;
-      }
-      const [, pidRaw, ppidRaw, rssKbRaw, cpuRaw, command] = match;
-      const processId = Number.parseInt(pidRaw, 10);
-      const parentProcessId = Number.parseInt(ppidRaw, 10);
-      const rssKb = Number.parseInt(rssKbRaw, 10);
-      const cpuPercent = Number.parseFloat(cpuRaw);
-      if (
-        !Number.isInteger(processId) ||
-        !Number.isInteger(parentProcessId) ||
-        !Number.isFinite(rssKb)
-      ) {
-        return null;
-      }
-      return {
-        processId,
-        parentProcessId,
-        rssKb,
-        cpuPercent: Number.isFinite(cpuPercent) ? cpuPercent : null,
-        command: command ?? "",
-      };
-    })
-    .filter(Boolean);
+  const rows = [];
+  const malformedRows = [];
+  for (const line of stdout.split(/\r?\n/u)) {
+    const match = line.match(/^\s*(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(.*)$/u);
+    if (!match) {
+      continue;
+    }
+    const [, pidRaw, ppidRaw, rssKbRaw, cpuRaw, command] = match;
+    if (!/^\d/u.test(pidRaw) && !/^\d/u.test(ppidRaw)) {
+      continue;
+    }
+    const processId = parseStrictPositiveInteger(pidRaw);
+    const parentProcessId = parseStrictUnsignedInteger(ppidRaw);
+    const rssKb = parseStrictPositiveInteger(rssKbRaw);
+    const cpuPercent = parseStrictNonNegativeDecimal(cpuRaw);
+    if (
+      !Number.isInteger(processId) ||
+      !Number.isInteger(parentProcessId) ||
+      !Number.isInteger(rssKb)
+    ) {
+      malformedRows.push({
+        pidRaw,
+        ppidRaw,
+      });
+      continue;
+    }
+    rows.push({
+      processId,
+      parentProcessId,
+      rssKb,
+      cpuPercent,
+      command: command ?? "",
+    });
+  }
+  return { malformedRows, rows };
+}
+
+function parseStrictNonNegativeDecimal(raw) {
+  const text = String(raw ?? "").trim();
+  if (!/^(?:0|[1-9]\d*)(?:\.\d+)?$/u.test(text)) {
+    return null;
+  }
+  const parsed = Number(text);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function parseStrictUnsignedInteger(raw) {
+  const text = String(raw ?? "").trim();
+  if (!/^(?:0|[1-9]\d*)$/u.test(text)) {
+    return null;
+  }
+  const parsed = Number(text);
+  return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
+function parseStrictPositiveInteger(raw) {
+  const parsed = parseStrictUnsignedInteger(raw);
+  return parsed && parsed > 0 ? parsed : null;
+}
+
+function parseTasklistMemoryKiB(raw) {
+  const text = String(raw ?? "").trim();
+  const match = text.match(/^((?:0|[1-9]\d*)|(?:[1-9]\d{0,2}(?:,\d{3})+))\s*K$/iu);
+  if (!match) {
+    return null;
+  }
+  const parsed = Number(match[1].replaceAll(",", ""));
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
 }
 
 function collectPosixProcessTree(rows, rootPid) {
@@ -1777,6 +1895,32 @@ function collectPosixProcessTree(rows, rootPid) {
     }
   }
   return collected;
+}
+
+function hasMalformedProcessTreeRows(malformedRows, treeRows) {
+  if (malformedRows.length === 0 || treeRows.length === 0) {
+    return false;
+  }
+  const treePids = new Set(treeRows.map((row) => row.processId));
+  return malformedRows.some(
+    (row) =>
+      rawProcessTokenMatchesTree(row.pidRaw, treePids) ||
+      rawProcessTokenMatchesTree(row.ppidRaw, treePids),
+  );
+}
+
+function rawProcessTokenMatchesTree(raw, treePids) {
+  const text = String(raw ?? "").trim();
+  for (const pid of treePids) {
+    const pidText = String(pid);
+    if (text === pidText) {
+      return true;
+    }
+    if (text.startsWith(pidText) && !/\d/u.test(text.at(pidText.length) ?? "")) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function selectPeakRssProcess(rows) {
@@ -1847,16 +1991,16 @@ async function sampleWindowsPidWithTasklist(pid, run) {
     const tasklistFields = parseTasklistCsvLine(line);
     const processIdRaw = tasklistFields[1];
     const memoryRaw = tasklistFields[4];
-    const processId = Number.parseInt(processIdRaw ?? "", 10);
-    const memoryKiB = Number.parseInt((memoryRaw ?? "").replace(/[^\d]/gu, ""), 10);
-    if (!Number.isFinite(memoryKiB)) {
+    const processId = parseStrictUnsignedInteger(processIdRaw);
+    const memoryKiB = parseTasklistMemoryKiB(memoryRaw);
+    if (memoryKiB === null) {
       return null;
     }
     return {
       rssMiB: Math.round((memoryKiB / 1024) * 10) / 10,
       cpuPercent: null,
       cpuSeconds: null,
-      processId: Number.isFinite(processId) ? processId : safePid,
+      processId: processId ?? safePid,
     };
   } catch {
     return null;
@@ -1940,24 +2084,24 @@ async function sampleWindowsProcess(pid, run, commandLineNeedles = []) {
       const [workingSetBytesRaw, cpuSecondsRaw, processIdRaw, aggregateWorkingSetBytesRaw] = stdout
         .trim()
         .split(/\s+/u);
-      const workingSetBytes = Number.parseInt(workingSetBytesRaw ?? "", 10);
-      const aggregateWorkingSetBytes = Number.parseInt(
+      const workingSetBytes = parseStrictUnsignedInteger(workingSetBytesRaw);
+      const aggregateWorkingSetBytes = parseStrictUnsignedInteger(
         aggregateWorkingSetBytesRaw ?? workingSetBytesRaw ?? "",
-        10,
       );
-      const cpuSeconds = Number.parseFloat(cpuSecondsRaw ?? "");
-      const processId = Number.parseInt(processIdRaw ?? "", 10);
-      if (!Number.isFinite(workingSetBytes)) {
+      const cpuSeconds = parseStrictNonNegativeDecimal(cpuSecondsRaw);
+      const processId = parseStrictUnsignedInteger(processIdRaw);
+      if (workingSetBytes === null) {
         return null;
       }
       return {
         rssMiB: Math.round((workingSetBytes / 1024 / 1024) * 10) / 10,
-        aggregateRssMiB: Number.isFinite(aggregateWorkingSetBytes)
-          ? Math.round((aggregateWorkingSetBytes / 1024 / 1024) * 10) / 10
-          : Math.round((workingSetBytes / 1024 / 1024) * 10) / 10,
+        aggregateRssMiB:
+          aggregateWorkingSetBytes !== null
+            ? Math.round((aggregateWorkingSetBytes / 1024 / 1024) * 10) / 10
+            : Math.round((workingSetBytes / 1024 / 1024) * 10) / 10,
         cpuPercent: null,
-        cpuSeconds: Number.isFinite(cpuSeconds) ? cpuSeconds : null,
-        processId: Number.isFinite(processId) ? processId : safePid,
+        cpuSeconds,
+        processId: processId ?? safePid,
       };
     } catch {
       // Try the next Windows PowerShell command name.
@@ -2120,11 +2264,7 @@ function isNonEmptyString(value) {
 export async function main() {
   const config = resolveKitchenSinkRpcConfig();
   let runner = resolveOpenClawRunner();
-  const port = readPositiveInt(
-    process.env.OPENCLAW_KITCHEN_SINK_RPC_PORT,
-    DEFAULT_PORT,
-    "OPENCLAW_KITCHEN_SINK_RPC_PORT",
-  );
+  const port = await resolveKitchenSinkRpcPort();
   const { root, env } = makeEnv();
   const logPath = path.join(root, "gateway.log");
   const keepTmp = process.env.OPENCLAW_KITCHEN_SINK_KEEP_TMP === "1";

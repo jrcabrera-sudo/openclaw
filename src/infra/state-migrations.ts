@@ -84,6 +84,7 @@ import {
   type SessionEntryLike,
   safeReadDir,
 } from "./state-migrations.fs.js";
+import { normalizeVoiceWakeRoutingConfig } from "./voicewake-routing.js";
 
 export type LegacyStateDetection = {
   targetAgentId: string;
@@ -139,6 +140,15 @@ export type LegacyStateDetection = {
     sessionPath: string;
     hasLegacy: boolean;
   };
+  voiceWake: {
+    triggersPath: string;
+    routingPath: string;
+    hasLegacy: boolean;
+  };
+  updateCheck: {
+    sourcePath: string;
+    hasLegacy: boolean;
+  };
   execApprovals: {
     sourcePath: string;
     targetPath: string;
@@ -177,6 +187,11 @@ type LegacyPluginStateSidecarRow = {
 };
 
 type LegacyPluginStateImportDatabase = Pick<OpenClawStateKyselyDatabase, "plugin_state_entries">;
+type LegacyVoiceWakeImportDatabase = Pick<
+  OpenClawStateKyselyDatabase,
+  "voicewake_routing_config" | "voicewake_routing_routes" | "voicewake_triggers"
+>;
+type LegacyUpdateCheckImportDatabase = Pick<OpenClawStateKyselyDatabase, "update_check_state">;
 type SqliteBindRow = Record<string, SQLInputValue>;
 
 type DetectedPluginDoctorStateMigrationPlan = {
@@ -1491,6 +1506,461 @@ async function migrateLegacyDeliveryQueues(params: {
       continue;
     }
     removeLegacyDeliveryQueueDir({ queueDir, label: queue.label, changes, warnings });
+  }
+  return { changes, warnings };
+}
+
+const VOICEWAKE_CONFIG_KEY = "default";
+const DEFAULT_VOICEWAKE_TRIGGERS = ["openclaw", "claude", "computer"];
+
+function resolveLegacyVoiceWakeTriggersPath(stateDir: string): string {
+  return path.join(stateDir, "settings", "voicewake.json");
+}
+
+function resolveLegacyVoiceWakeRoutingPath(stateDir: string): string {
+  return path.join(stateDir, "settings", "voicewake-routing.json");
+}
+
+function readLegacyJsonObject(sourcePath: string): unknown {
+  return JSON.parse(fs.readFileSync(sourcePath, "utf8")) as unknown;
+}
+
+function normalizeLegacyVoiceWakeTriggers(input: unknown): string[] {
+  const rec = input && typeof input === "object" ? (input as { triggers?: unknown }) : {};
+  const triggers = Array.isArray(rec.triggers)
+    ? rec.triggers
+        .flatMap((entry) => (typeof entry === "string" ? [entry.trim()] : []))
+        .filter((entry) => entry.length > 0)
+    : [];
+  return triggers.length > 0 ? triggers : DEFAULT_VOICEWAKE_TRIGGERS;
+}
+
+function legacyVoiceWakeTriggersMatch(
+  rows: Array<{ trigger: string }>,
+  triggers: string[],
+): boolean {
+  return (
+    rows.length === triggers.length && rows.every((row, index) => row.trigger === triggers[index])
+  );
+}
+
+function legacyVoiceWakeTargetColumns(target: {
+  agentId?: string;
+  mode?: "current";
+  sessionKey?: string;
+}): {
+  targetAgentId: string | null;
+  targetMode: string;
+  targetSessionKey: string | null;
+} {
+  if (target.agentId) {
+    return { targetAgentId: target.agentId, targetMode: "agent", targetSessionKey: null };
+  }
+  if (target.sessionKey) {
+    return { targetAgentId: null, targetMode: "session", targetSessionKey: target.sessionKey };
+  }
+  return { targetAgentId: null, targetMode: "current", targetSessionKey: null };
+}
+
+function legacyVoiceWakeTargetColumnsMatch(
+  left: ReturnType<typeof legacyVoiceWakeTargetColumns>,
+  right: {
+    target_agent_id?: string | null;
+    target_mode?: string | null;
+    target_session_key?: string | null;
+  },
+): boolean {
+  return (
+    left.targetAgentId === (right.target_agent_id ?? null) &&
+    left.targetMode === right.target_mode &&
+    left.targetSessionKey === (right.target_session_key ?? null)
+  );
+}
+
+function legacyVoiceWakeRoutingMatches(
+  configRow: {
+    default_target_agent_id: string | null;
+    default_target_mode: string;
+    default_target_session_key: string | null;
+  },
+  routeRows: Array<{
+    target_agent_id: string | null;
+    target_mode: string;
+    target_session_key: string | null;
+    trigger: string;
+  }>,
+  routingConfig: ReturnType<typeof normalizeVoiceWakeRoutingConfig>,
+): boolean {
+  const defaultTarget = legacyVoiceWakeTargetColumns(routingConfig.defaultTarget);
+  if (
+    !legacyVoiceWakeTargetColumnsMatch(defaultTarget, {
+      target_agent_id: configRow.default_target_agent_id,
+      target_mode: configRow.default_target_mode,
+      target_session_key: configRow.default_target_session_key,
+    })
+  ) {
+    return false;
+  }
+  return (
+    routeRows.length === routingConfig.routes.length &&
+    routeRows.every((row, index) => {
+      const route = routingConfig.routes[index];
+      if (!route || row.trigger !== route.trigger) {
+        return false;
+      }
+      return legacyVoiceWakeTargetColumnsMatch(legacyVoiceWakeTargetColumns(route.target), row);
+    })
+  );
+}
+
+function migrateLegacyVoiceWakeSettings(params: {
+  detected: LegacyStateDetection["voiceWake"];
+  stateDir: string;
+}): { changes: string[]; warnings: string[] } {
+  const changes: string[] = [];
+  const warnings: string[] = [];
+  const env = { ...process.env, OPENCLAW_STATE_DIR: params.stateDir };
+  if (fileExists(params.detected.triggersPath)) {
+    let triggers: string[];
+    try {
+      triggers = normalizeLegacyVoiceWakeTriggers(
+        readLegacyJsonObject(params.detected.triggersPath),
+      );
+    } catch (err) {
+      warnings.push(
+        `Failed reading legacy voice wake triggers ${params.detected.triggersPath}: ${String(err)}`,
+      );
+      triggers = [];
+    }
+    if (triggers.length > 0) {
+      let imported = false;
+      let shouldArchive = false;
+      try {
+        runOpenClawStateWriteTransaction(
+          ({ db }) => {
+            const stateDb = getNodeSqliteKysely<LegacyVoiceWakeImportDatabase>(db);
+            const existing = executeSqliteQuerySync(
+              db,
+              stateDb
+                .selectFrom("voicewake_triggers")
+                .select(["trigger"])
+                .where("config_key", "=", VOICEWAKE_CONFIG_KEY)
+                .orderBy("position", "asc"),
+            ).rows;
+            if (existing.length > 0) {
+              if (!legacyVoiceWakeTriggersMatch(existing, triggers)) {
+                warnings.push(
+                  `Left legacy voice wake triggers in place because shared SQLite state already has different triggers: ${params.detected.triggersPath}`,
+                );
+              } else {
+                shouldArchive = true;
+              }
+              return;
+            }
+            const updatedAtMs = Date.now();
+            executeSqliteQuerySync(
+              db,
+              stateDb.insertInto("voicewake_triggers").values(
+                triggers.map((trigger, position) => ({
+                  config_key: VOICEWAKE_CONFIG_KEY,
+                  position,
+                  trigger,
+                  updated_at_ms: updatedAtMs,
+                })),
+              ),
+            );
+            imported = true;
+            shouldArchive = true;
+          },
+          { env },
+        );
+      } catch (err) {
+        warnings.push(`Failed migrating legacy voice wake triggers: ${String(err)}`);
+      }
+      if (imported) {
+        changes.push(
+          `Migrated ${triggers.length} voice wake ${triggers.length === 1 ? "trigger" : "triggers"} → shared SQLite state`,
+        );
+      }
+      if (shouldArchive) {
+        archiveLegacyImportSource({
+          sourcePath: params.detected.triggersPath,
+          label: "voice wake triggers",
+          changes,
+          warnings,
+        });
+      }
+    }
+  }
+
+  if (fileExists(params.detected.routingPath)) {
+    let routingConfig: ReturnType<typeof normalizeVoiceWakeRoutingConfig> | null = null;
+    try {
+      routingConfig = normalizeVoiceWakeRoutingConfig(
+        readLegacyJsonObject(params.detected.routingPath),
+      );
+    } catch (err) {
+      warnings.push(
+        `Failed reading legacy voice wake routing ${params.detected.routingPath}: ${String(err)}`,
+      );
+    }
+    if (routingConfig) {
+      let imported = false;
+      let shouldArchive = false;
+      try {
+        runOpenClawStateWriteTransaction(
+          ({ db }) => {
+            const stateDb = getNodeSqliteKysely<LegacyVoiceWakeImportDatabase>(db);
+            const existing = executeSqliteQueryTakeFirstSync(
+              db,
+              stateDb
+                .selectFrom("voicewake_routing_config")
+                .select([
+                  "default_target_agent_id",
+                  "default_target_mode",
+                  "default_target_session_key",
+                ])
+                .where("config_key", "=", VOICEWAKE_CONFIG_KEY),
+            );
+            if (existing) {
+              const routeRows = executeSqliteQuerySync(
+                db,
+                stateDb
+                  .selectFrom("voicewake_routing_routes")
+                  .select(["target_agent_id", "target_mode", "target_session_key", "trigger"])
+                  .where("config_key", "=", VOICEWAKE_CONFIG_KEY)
+                  .orderBy("position", "asc"),
+              ).rows;
+              if (legacyVoiceWakeRoutingMatches(existing, routeRows, routingConfig)) {
+                shouldArchive = true;
+              } else {
+                warnings.push(
+                  `Left legacy voice wake routing in place because shared SQLite routing already exists with different routes: ${params.detected.routingPath}`,
+                );
+              }
+              return;
+            }
+            const updatedAtMs = Date.now();
+            const defaultTarget = legacyVoiceWakeTargetColumns(routingConfig.defaultTarget);
+            executeSqliteQuerySync(
+              db,
+              stateDb.insertInto("voicewake_routing_config").values({
+                config_key: VOICEWAKE_CONFIG_KEY,
+                version: 1,
+                default_target_mode: defaultTarget.targetMode,
+                default_target_agent_id: defaultTarget.targetAgentId,
+                default_target_session_key: defaultTarget.targetSessionKey,
+                updated_at_ms: updatedAtMs,
+              }),
+            );
+            if (routingConfig.routes.length > 0) {
+              executeSqliteQuerySync(
+                db,
+                stateDb.insertInto("voicewake_routing_routes").values(
+                  routingConfig.routes.map((route, position) => {
+                    const target = legacyVoiceWakeTargetColumns(route.target);
+                    return {
+                      config_key: VOICEWAKE_CONFIG_KEY,
+                      position,
+                      trigger: route.trigger,
+                      target_mode: target.targetMode,
+                      target_agent_id: target.targetAgentId,
+                      target_session_key: target.targetSessionKey,
+                      updated_at_ms: updatedAtMs,
+                    };
+                  }),
+                ),
+              );
+            }
+            imported = true;
+            shouldArchive = true;
+          },
+          { env },
+        );
+      } catch (err) {
+        warnings.push(`Failed migrating legacy voice wake routing: ${String(err)}`);
+      }
+      if (imported) {
+        changes.push(
+          `Migrated voice wake routing config with ${routingConfig.routes.length} ${routingConfig.routes.length === 1 ? "route" : "routes"} → shared SQLite state`,
+        );
+      }
+      if (shouldArchive) {
+        archiveLegacyImportSource({
+          sourcePath: params.detected.routingPath,
+          label: "voice wake routing",
+          changes,
+          warnings,
+        });
+      }
+    }
+  }
+
+  return { changes, warnings };
+}
+
+const UPDATE_CHECK_STATE_KEY = "default";
+
+type LegacyUpdateCheckState = {
+  lastCheckedAt?: string;
+  lastNotifiedVersion?: string;
+  lastNotifiedTag?: string;
+  lastAvailableVersion?: string;
+  lastAvailableTag?: string;
+  autoInstallId?: string;
+  autoFirstSeenVersion?: string;
+  autoFirstSeenTag?: string;
+  autoFirstSeenAt?: string;
+  autoLastAttemptVersion?: string;
+  autoLastAttemptAt?: string;
+  autoLastSuccessVersion?: string;
+  autoLastSuccessAt?: string;
+};
+
+function resolveLegacyUpdateCheckPath(stateDir: string): string {
+  return path.join(stateDir, "update-check.json");
+}
+
+function optionalLegacyString(record: Record<string, unknown>, key: string): string | undefined {
+  const value = record[key];
+  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+}
+
+function normalizeLegacyUpdateCheckState(input: unknown): LegacyUpdateCheckState {
+  const record = input && typeof input === "object" ? (input as Record<string, unknown>) : {};
+  return {
+    lastCheckedAt: optionalLegacyString(record, "lastCheckedAt"),
+    lastNotifiedVersion: optionalLegacyString(record, "lastNotifiedVersion"),
+    lastNotifiedTag: optionalLegacyString(record, "lastNotifiedTag"),
+    lastAvailableVersion: optionalLegacyString(record, "lastAvailableVersion"),
+    lastAvailableTag: optionalLegacyString(record, "lastAvailableTag"),
+    autoInstallId: optionalLegacyString(record, "autoInstallId"),
+    autoFirstSeenVersion: optionalLegacyString(record, "autoFirstSeenVersion"),
+    autoFirstSeenTag: optionalLegacyString(record, "autoFirstSeenTag"),
+    autoFirstSeenAt: optionalLegacyString(record, "autoFirstSeenAt"),
+    autoLastAttemptVersion: optionalLegacyString(record, "autoLastAttemptVersion"),
+    autoLastAttemptAt: optionalLegacyString(record, "autoLastAttemptAt"),
+    autoLastSuccessVersion: optionalLegacyString(record, "autoLastSuccessVersion"),
+    autoLastSuccessAt: optionalLegacyString(record, "autoLastSuccessAt"),
+  };
+}
+
+function legacyUpdateCheckStateMatches(
+  row: {
+    last_checked_at: string | null;
+    last_notified_version: string | null;
+    last_notified_tag: string | null;
+    last_available_version: string | null;
+    last_available_tag: string | null;
+    auto_install_id: string | null;
+    auto_first_seen_version: string | null;
+    auto_first_seen_tag: string | null;
+    auto_first_seen_at: string | null;
+    auto_last_attempt_version: string | null;
+    auto_last_attempt_at: string | null;
+    auto_last_success_version: string | null;
+    auto_last_success_at: string | null;
+  },
+  state: LegacyUpdateCheckState,
+): boolean {
+  return (
+    (state.lastCheckedAt ?? null) === row.last_checked_at &&
+    (state.lastNotifiedVersion ?? null) === row.last_notified_version &&
+    (state.lastNotifiedTag ?? null) === row.last_notified_tag &&
+    (state.lastAvailableVersion ?? null) === row.last_available_version &&
+    (state.lastAvailableTag ?? null) === row.last_available_tag &&
+    (state.autoInstallId ?? null) === row.auto_install_id &&
+    (state.autoFirstSeenVersion ?? null) === row.auto_first_seen_version &&
+    (state.autoFirstSeenTag ?? null) === row.auto_first_seen_tag &&
+    (state.autoFirstSeenAt ?? null) === row.auto_first_seen_at &&
+    (state.autoLastAttemptVersion ?? null) === row.auto_last_attempt_version &&
+    (state.autoLastAttemptAt ?? null) === row.auto_last_attempt_at &&
+    (state.autoLastSuccessVersion ?? null) === row.auto_last_success_version &&
+    (state.autoLastSuccessAt ?? null) === row.auto_last_success_at
+  );
+}
+
+function migrateLegacyUpdateCheckState(params: {
+  detected: LegacyStateDetection["updateCheck"];
+  stateDir: string;
+}): { changes: string[]; warnings: string[] } {
+  const changes: string[] = [];
+  const warnings: string[] = [];
+  if (!fileExists(params.detected.sourcePath)) {
+    return { changes, warnings };
+  }
+
+  let state: LegacyUpdateCheckState;
+  try {
+    state = normalizeLegacyUpdateCheckState(readLegacyJsonObject(params.detected.sourcePath));
+  } catch (err) {
+    warnings.push(
+      `Failed reading legacy update-check state ${params.detected.sourcePath}: ${String(err)}`,
+    );
+    return { changes, warnings };
+  }
+
+  let imported = false;
+  let shouldArchive = false;
+  try {
+    runOpenClawStateWriteTransaction(
+      ({ db }) => {
+        const stateDb = getNodeSqliteKysely<LegacyUpdateCheckImportDatabase>(db);
+        const existing = executeSqliteQueryTakeFirstSync(
+          db,
+          stateDb
+            .selectFrom("update_check_state")
+            .selectAll()
+            .where("state_key", "=", UPDATE_CHECK_STATE_KEY),
+        );
+        if (existing) {
+          if (legacyUpdateCheckStateMatches(existing, state)) {
+            shouldArchive = true;
+          } else {
+            warnings.push(
+              `Left legacy update-check state in place because shared SQLite state already differs: ${params.detected.sourcePath}`,
+            );
+          }
+          return;
+        }
+        executeSqliteQuerySync(
+          db,
+          stateDb.insertInto("update_check_state").values({
+            state_key: UPDATE_CHECK_STATE_KEY,
+            last_checked_at: state.lastCheckedAt ?? null,
+            last_notified_version: state.lastNotifiedVersion ?? null,
+            last_notified_tag: state.lastNotifiedTag ?? null,
+            last_available_version: state.lastAvailableVersion ?? null,
+            last_available_tag: state.lastAvailableTag ?? null,
+            auto_install_id: state.autoInstallId ?? null,
+            auto_first_seen_version: state.autoFirstSeenVersion ?? null,
+            auto_first_seen_tag: state.autoFirstSeenTag ?? null,
+            auto_first_seen_at: state.autoFirstSeenAt ?? null,
+            auto_last_attempt_version: state.autoLastAttemptVersion ?? null,
+            auto_last_attempt_at: state.autoLastAttemptAt ?? null,
+            auto_last_success_version: state.autoLastSuccessVersion ?? null,
+            auto_last_success_at: state.autoLastSuccessAt ?? null,
+            updated_at_ms: Date.now(),
+          }),
+        );
+        imported = true;
+        shouldArchive = true;
+      },
+      { env: { ...process.env, OPENCLAW_STATE_DIR: params.stateDir } },
+    );
+  } catch (err) {
+    warnings.push(`Failed migrating legacy update-check state: ${String(err)}`);
+  }
+  if (imported) {
+    changes.push("Migrated update-check state → shared SQLite state");
+  }
+  if (shouldArchive) {
+    archiveLegacyImportSource({
+      sourcePath: params.detected.sourcePath,
+      label: "update-check state",
+      changes,
+      warnings,
+    });
   }
   return { changes, warnings };
 }
@@ -2914,6 +3384,15 @@ export async function detectLegacyStateMigrations(params: {
     listLegacyDeliveryQueueDeliveredMarkers(deliveryQueuePaths.outboundPath).length > 0 ||
     listLegacyDeliveryQueueFiles(deliveryQueuePaths.sessionPath).length > 0 ||
     listLegacyDeliveryQueueDeliveredMarkers(deliveryQueuePaths.sessionPath).length > 0;
+  const voiceWake = {
+    triggersPath: resolveLegacyVoiceWakeTriggersPath(stateDir),
+    routingPath: resolveLegacyVoiceWakeRoutingPath(stateDir),
+  };
+  const hasVoiceWake = fileExists(voiceWake.triggersPath) || fileExists(voiceWake.routingPath);
+  const updateCheck = {
+    sourcePath: resolveLegacyUpdateCheckPath(stateDir),
+  };
+  const hasUpdateCheck = fileExists(updateCheck.sourcePath);
   const channelPlans = await collectChannelLegacyStateMigrationPlans({
     cfg: params.cfg,
     env,
@@ -2975,6 +3454,12 @@ export async function detectLegacyStateMigrations(params: {
   if (hasDeliveryQueues) {
     preview.push("- Delivery queues: legacy JSON queue files → shared SQLite state");
   }
+  if (hasVoiceWake) {
+    preview.push("- Voice Wake settings: legacy JSON files → shared SQLite state");
+  }
+  if (hasUpdateCheck) {
+    preview.push("- Update-check state: legacy JSON file → shared SQLite state");
+  }
   if (execApprovals.hasLegacy) {
     preview.push(`- Exec approvals: ${execApprovals.sourcePath} → ${execApprovals.targetPath}`);
   }
@@ -3033,6 +3518,14 @@ export async function detectLegacyStateMigrations(params: {
     deliveryQueues: {
       ...deliveryQueuePaths,
       hasLegacy: hasDeliveryQueues,
+    },
+    voiceWake: {
+      ...voiceWake,
+      hasLegacy: hasVoiceWake,
+    },
+    updateCheck: {
+      ...updateCheck,
+      hasLegacy: hasUpdateCheck,
     },
     execApprovals,
     preview,
@@ -3552,6 +4045,14 @@ export async function runLegacyStateMigrations(params: {
   const deliveryQueues = await migrateLegacyDeliveryQueues({
     stateDir: detected.stateDir,
   });
+  const voiceWake = migrateLegacyVoiceWakeSettings({
+    detected: detected.voiceWake,
+    stateDir: detected.stateDir,
+  });
+  const updateCheck = migrateLegacyUpdateCheckState({
+    detected: detected.updateCheck,
+    stateDir: detected.stateDir,
+  });
   const execApprovals = migrateLegacyExecApprovals(detected.execApprovals);
   const preSessionChannelPlans = await runLegacyMigrationPlans(
     detected.channelPlans.plans.filter((plan) => plan.kind === "plugin-state-import"),
@@ -3582,6 +4083,8 @@ export async function runLegacyStateMigrations(params: {
       ...debugProxyCaptureSidecar.changes,
       ...taskStateSidecars.changes,
       ...deliveryQueues.changes,
+      ...voiceWake.changes,
+      ...updateCheck.changes,
       ...execApprovals.changes,
       ...preSessionChannelPlans.changes,
       ...pluginPlans.changes,
@@ -3597,6 +4100,8 @@ export async function runLegacyStateMigrations(params: {
       ...debugProxyCaptureSidecar.warnings,
       ...taskStateSidecars.warnings,
       ...deliveryQueues.warnings,
+      ...voiceWake.warnings,
+      ...updateCheck.warnings,
       ...execApprovals.warnings,
       ...preSessionChannelPlans.warnings,
       ...pluginPlans.warnings,
@@ -3918,6 +4423,14 @@ export async function autoMigrateLegacyState(params: {
     const deliveryQueues = await migrateLegacyDeliveryQueues({
       stateDir: detected.stateDir,
     });
+    const voiceWake = migrateLegacyVoiceWakeSettings({
+      detected: detected.voiceWake,
+      stateDir: detected.stateDir,
+    });
+    const updateCheck = migrateLegacyUpdateCheckState({
+      detected: detected.updateCheck,
+      stateDir: detected.stateDir,
+    });
     const execApprovals = migrateLegacyExecApprovals(detected.execApprovals);
     const preSessionChannelPlans = await runLegacyMigrationPlans(
       detected.channelPlans.plans.filter((plan) => plan.kind === "plugin-state-import"),
@@ -3936,6 +4449,8 @@ export async function autoMigrateLegacyState(params: {
       ...debugProxyCaptureSidecar.changes,
       ...taskStateSidecars.changes,
       ...deliveryQueues.changes,
+      ...voiceWake.changes,
+      ...updateCheck.changes,
       ...execApprovals.changes,
       ...preSessionChannelPlans.changes,
       ...pluginPlans.changes,
@@ -3950,6 +4465,8 @@ export async function autoMigrateLegacyState(params: {
       ...debugProxyCaptureSidecar.warnings,
       ...taskStateSidecars.warnings,
       ...deliveryQueues.warnings,
+      ...voiceWake.warnings,
+      ...updateCheck.warnings,
       ...execApprovals.warnings,
       ...preSessionChannelPlans.warnings,
       ...pluginPlans.warnings,
@@ -3966,6 +4483,8 @@ export async function autoMigrateLegacyState(params: {
         debugProxyCaptureSidecar.changes.length > 0 ||
         taskStateSidecars.changes.length > 0 ||
         deliveryQueues.changes.length > 0 ||
+        voiceWake.changes.length > 0 ||
+        updateCheck.changes.length > 0 ||
         execApprovals.changes.length > 0 ||
         preSessionChannelPlans.changes.length > 0 ||
         pluginPlans.changes.length > 0,
@@ -3985,6 +4504,8 @@ export async function autoMigrateLegacyState(params: {
     !detected.stateSchema.hasLegacy &&
     !detected.taskStateSidecars.hasLegacy &&
     !detected.deliveryQueues.hasLegacy &&
+    !detected.voiceWake.hasLegacy &&
+    !detected.updateCheck.hasLegacy &&
     !detected.execApprovals.hasLegacy
   ) {
     const changes = [
@@ -4029,6 +4550,14 @@ export async function autoMigrateLegacyState(params: {
   const deliveryQueues = await migrateLegacyDeliveryQueues({
     stateDir: detected.stateDir,
   });
+  const voiceWake = migrateLegacyVoiceWakeSettings({
+    detected: detected.voiceWake,
+    stateDir: detected.stateDir,
+  });
+  const updateCheck = migrateLegacyUpdateCheckState({
+    detected: detected.updateCheck,
+    stateDir: detected.stateDir,
+  });
   const execApprovals = migrateLegacyExecApprovals(detected.execApprovals);
   const preSessionChannelPlans = await runLegacyMigrationPlans(
     detected.channelPlans.plans.filter((plan) => plan.kind === "plugin-state-import"),
@@ -4059,6 +4588,8 @@ export async function autoMigrateLegacyState(params: {
     ...debugProxyCaptureSidecar.changes,
     ...taskStateSidecars.changes,
     ...deliveryQueues.changes,
+    ...voiceWake.changes,
+    ...updateCheck.changes,
     ...execApprovals.changes,
     ...preSessionChannelPlans.changes,
     ...pluginPlans.changes,
@@ -4077,6 +4608,8 @@ export async function autoMigrateLegacyState(params: {
     ...debugProxyCaptureSidecar.warnings,
     ...taskStateSidecars.warnings,
     ...deliveryQueues.warnings,
+    ...voiceWake.warnings,
+    ...updateCheck.warnings,
     ...execApprovals.warnings,
     ...preSessionChannelPlans.warnings,
     ...pluginPlans.warnings,

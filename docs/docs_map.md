@@ -289,7 +289,7 @@ Do not edit it by hand; run `pnpm docs:map:gen`.
 
 - Route: /channels/channel-routing
 - Headings:
-  - H1: Channels & routing
+  - H1: Channels &amp; routing
   - H2: Key terms
   - H2: Outbound target prefixes
   - H2: Session key shapes (examples)
@@ -817,9 +817,11 @@ Do not edit it by hand; run `pnpm docs:map:gen`.
   - H2: How it works (behavior)
   - H2: Media + limits
   - H2: Typing + read receipts
+  - H2: Lifecycle status reactions
   - H2: Reactions (message tool)
   - H2: Approval reactions
   - H2: Delivery targets (CLI/cron)
+  - H2: Aliases
   - H2: Troubleshooting
   - H2: Security notes
   - H2: Configuration reference (Signal)
@@ -1129,6 +1131,7 @@ Do not edit it by hand; run `pnpm docs:map:gen`.
   - H2: ClawSweeper activity forwarding
   - H2: Manual dispatches
   - H2: Runners
+  - H2: Runner registration budget
   - H2: Local equivalents
   - H2: OpenClaw Performance
   - H2: Full Release Validation
@@ -1225,7 +1228,7 @@ Do not edit it by hand; run `pnpm docs:map:gen`.
   - H3: agents bindings
   - H3: agents bind
   - H3: agents unbind
-  - H3: agents delete
+  - H3: agents delete &lt;id&gt;
   - H2: Identity files
   - H2: Set identity
   - H2: Related
@@ -1243,6 +1246,11 @@ Do not edit it by hand; run `pnpm docs:map:gen`.
   - H2: Common options
   - H2: Notes
   - H2: Related
+
+## cli/attach.md
+
+- Route: /cli/attach
+- Headings: none
 
 ## cli/backup.md
 
@@ -1412,13 +1420,13 @@ Do not edit it by hand; run `pnpm docs:map:gen`.
   - H1: openclaw devices
   - H2: Commands
   - H3: openclaw devices list
-  - H3: openclaw devices remove
+  - H3: openclaw devices remove &lt;deviceId&gt;
   - H3: openclaw devices clear --yes [--pending]
   - H3: openclaw devices approve [requestId] [--latest]
   - H2: Paperclip / openclawgateway first-run approval
-  - H3: openclaw devices reject
-  - H3: openclaw devices rotate --device --role [--scope ]
-  - H3: openclaw devices revoke --device --role
+  - H3: openclaw devices reject &lt;requestId&gt;
+  - H3: openclaw devices rotate --device &lt;id&gt; --role &lt;role&gt; [--scope &lt;scope...&gt;]
+  - H3: openclaw devices revoke --device &lt;id&gt; --role &lt;role&gt;
   - H2: Common options
   - H2: Notes
   - H2: Token drift recovery checklist
@@ -1500,7 +1508,7 @@ Do not edit it by hand; run `pnpm docs:map:gen`.
   - H3: gateway status
   - H3: gateway probe
   - H4: Remote over SSH (Mac app parity)
-  - H3: gateway call
+  - H3: gateway call &lt;method&gt;
   - H2: Manage the Gateway service
   - H3: Install with a wrapper
   - H2: Discover gateways (Bonjour)
@@ -1706,6 +1714,7 @@ Do not edit it by hand; run `pnpm docs:map:gen`.
   - H2: Examples
   - H2: Locale
   - H3: Non-interactive Z.AI endpoint choices
+  - H2: Additional non-interactive flags
   - H2: Flow notes
   - H2: Common follow-up commands
 
@@ -1740,11 +1749,11 @@ Do not edit it by hand; run `pnpm docs:map:gen`.
   - H3: JSONL
   - H3: YAML
   - H2: Subcommand reference
-  - H3: resolve
-  - H3: find
-  - H3: set
-  - H3: validate
-  - H3: emit
+  - H3: resolve &lt;oc-path&gt;
+  - H3: find &lt;pattern&gt;
+  - H3: set &lt;oc-path&gt; &lt;value&gt;
+  - H3: validate &lt;oc-path&gt;
+  - H3: emit &lt;file&gt;
   - H2: Exit codes
   - H2: Output mode
   - H2: Notes
@@ -1756,6 +1765,7 @@ Do not edit it by hand; run `pnpm docs:map:gen`.
 - Headings:
   - H2: Commands
   - H3: Author
+  - H3: Provider Scaffold
   - H3: Install
   - H4: Marketplace shorthand
   - H3: List
@@ -1885,7 +1895,7 @@ Do not edit it by hand; run `pnpm docs:map:gen`.
 - Headings:
   - H1: openclaw setup
   - H2: Options
-  - H3: Wizard auto-trigger
+  - H3: Baseline mode
   - H2: Examples
   - H2: Notes
   - H2: Related
@@ -2031,12 +2041,12 @@ Do not edit it by hand; run `pnpm docs:map:gen`.
   - H3: wiki status
   - H3: wiki doctor
   - H3: wiki init
-  - H3: wiki ingest
-  - H3: wiki okf import
+  - H3: wiki ingest &lt;path-or-url&gt;
+  - H3: wiki okf import &lt;path&gt;
   - H3: wiki compile
   - H3: wiki lint
-  - H3: wiki search
-  - H3: wiki get
+  - H3: wiki search &lt;query&gt;
+  - H3: wiki get &lt;lookup&gt;
   - H3: wiki apply
   - H3: wiki bridge import
   - H3: wiki unsafe-local import
@@ -2827,6 +2837,7 @@ Do not edit it by hand; run `pnpm docs:map:gen`.
   - H3: Channel mapping
   - H3: Runtime behavior
   - H3: Tool-progress preview updates
+  - H3: Commentary progress lane
   - H2: Related
 
 ## concepts/system-prompt.md
@@ -2885,6 +2896,12 @@ Do not edit it by hand; run `pnpm docs:map:gen`.
 - Headings:
   - H2: What it is
   - H2: Where it shows up
+  - H2: Default usage footer mode
+  - H3: Three distinct session states
+  - H3: Precedence
+  - H3: Resetting vs. turning off
+  - H3: Toggle behavior
+  - H3: Config
   - H2: Custom /usage full footer
   - H3: Shape
   - H3: Contract Paths
@@ -4188,6 +4205,7 @@ Do not edit it by hand; run `pnpm docs:map:gen`.
   - H3: Health checks
   - H3: LAN vs loopback
   - H3: Host Local Providers
+  - H3: Claude CLI backend in Docker
   - H3: Bonjour / mDNS
   - H3: Storage and persistence
   - H3: Shell helpers (optional)
@@ -4476,7 +4494,7 @@ Do not edit it by hand; run `pnpm docs:map:gen`.
   - H3: Volume (required)
   - H3: Variables
   - H2: Connect a channel
-  - H2: Backups & migration
+  - H2: Backups &amp; migration
   - H2: Next steps
 
 ## install/raspberry-pi.md
@@ -4592,6 +4610,32 @@ Do not edit it by hand; run `pnpm docs:map:gen`.
   - H2: Troubleshooting tips
   - H2: Related
 
+## maturity/scorecard.md
+
+- Route: /maturity/scorecard
+- Headings:
+  - H1: Maturity scorecard
+  - H2: What this page is for
+  - H2: At a glance
+  - H2: Score bands
+  - H2: Surface explorer
+  - H2: QA evidence summary
+  - H3: Readiness by area
+
+## maturity/taxonomy.md
+
+- Route: /maturity/taxonomy
+- Headings:
+  - H1: Maturity taxonomy
+  - H2: How to read this page
+  - H2: Maturity levels
+  - H2: Product areas
+  - H2: Details
+  - H3: Core
+  - H3: Platform
+  - H3: Channel
+  - H3: Provider and tool
+
 ## network.md
 
 - Route: /network
@@ -4670,6 +4714,7 @@ Do not edit it by hand; run `pnpm docs:map:gen`.
   - H3: Pair + name
   - H3: Allowlist the commands
   - H3: Point exec at the node
+  - H3: Local model inference
   - H2: Invoking commands
   - H2: Command policy
   - H2: Config (openclaw.json)
@@ -4922,6 +4967,8 @@ Do not edit it by hand; run `pnpm docs:map:gen`.
   - H2: Install the CLI (required for local mode)
   - H2: Launchd (Gateway as LaunchAgent)
   - H2: Version compatibility
+  - H2: State directory on macOS
+  - H2: Debug app connectivity
   - H2: Smoke check
   - H2: Related
 
@@ -5085,7 +5132,7 @@ Do not edit it by hand; run `pnpm docs:map:gen`.
 
 - Route: /platforms/mac/voicewake
 - Headings:
-  - H1: Voice Wake & Push-to-Talk
+  - H1: Voice Wake &amp; Push-to-Talk
   - H2: Requirements
   - H2: Modes
   - H2: Runtime behavior (wake-word)
@@ -5126,20 +5173,12 @@ Do not edit it by hand; run `pnpm docs:map:gen`.
 
 - Route: /platforms/macos
 - Headings:
-  - H2: What it does
-  - H2: Local vs remote mode
-  - H2: Launchd control
-  - H2: Node capabilities (mac)
-  - H2: Exec approvals (system.run)
-  - H2: Deep links
-  - H3: openclaw://agent
-  - H2: Onboarding flow (typical)
-  - H2: State dir placement (macOS)
-  - H2: Build and dev workflow (native)
-  - H2: Debug gateway connectivity (macOS CLI)
-  - H2: Remote connection plumbing (SSH tunnels)
-  - H3: Control tunnel (Gateway WebSocket port)
-  - H2: Related docs
+  - H2: Download
+  - H2: First run
+  - H2: Choose a Gateway mode
+  - H2: What the app owns
+  - H2: macOS detail pages
+  - H2: Related
 
 ## platforms/oracle.md
 
@@ -5437,6 +5476,7 @@ Do not edit it by hand; run `pnpm docs:map:gen`.
   - H2: Plugin install
   - H2: Quickstart
   - H2: Supported providers
+  - H2: BYOK
   - H2: Auth
   - H2: Configuration surface
   - H2: Compaction
@@ -5627,6 +5667,7 @@ Do not edit it by hand; run `pnpm docs:map:gen`.
   - H2: Renderer contract
   - H2: Core render flow
   - H2: Degradation rules
+  - H3: Button value fallback visibility
   - H2: Provider mapping
   - H2: Presentation vs InteractiveReply
   - H2: Delivery pin
@@ -6830,6 +6871,7 @@ Do not edit it by hand; run `pnpm docs:map:gen`.
   - H3: Tool-result middleware
   - H3: Terminal outcome classification
   - H3: Agent-end side effects
+  - H3: User input and tool surfaces
   - H3: Native Codex harness mode
   - H2: Runtime strictness
   - H2: Native sessions and transcript mirror
@@ -7574,6 +7616,7 @@ Do not edit it by hand; run `pnpm docs:map:gen`.
   - H2: Getting started
   - H2: Cloud models
   - H2: Model discovery (implicit provider)
+  - H2: Node-local inference
   - H2: Vision and image description
   - H2: Configuration
   - H2: Common recipes
@@ -7590,6 +7633,7 @@ Do not edit it by hand; run `pnpm docs:map:gen`.
 - Headings:
   - H2: Quick choice
   - H2: Naming map
+  - H2: GPT-5.6 limited preview
   - H2: OpenClaw feature coverage
   - H2: Memory embeddings
   - H2: Getting started
@@ -8417,6 +8461,38 @@ Do not edit it by hand; run `pnpm docs:map:gen`.
   - H2: What the wizard writes
   - H2: Related docs
 
+## releases/2026.6.11.md
+
+- Route: /releases/2026.6.11
+- Headings:
+  - H1: OpenClaw v2026.6.11 Release Notes (2026-06-30)
+  - H2: Highlights
+  - H3: Channel delivery reliability
+  - H3: Provider and model recovery
+  - H3: Session, memory, and trust continuity
+  - H3: Slack router relay mode
+  - H3: Raft External Agent wake bridge
+  - H3: Official plugin installation and repair
+  - H2: Channels and Messaging
+  - H3: Additional channel fixes
+  - H2: Gateway, Security, and Trust
+  - H3: Restart and readiness recovery
+  - H3: Remote result and media delivery
+  - H2: Clients and Interfaces
+  - H3: Client sends and reconnects
+  - H3: Interface, settings, and onboarding fixes
+  - H2: Docs and Admin Tools
+  - H3: Setup and command reliability
+  - H3: Tools and scheduled work
+
+## releases/index.md
+
+- Route: /releases
+- Headings:
+  - H1: Release notes
+  - H2: Releases
+  - H2: Raw release history
+
 ## security/CONTRIBUTING-THREAT-MODEL.md
 
 - Route: /security/CONTRIBUTING-THREAT-MODEL
@@ -8473,7 +8549,7 @@ Do not edit it by hand; run `pnpm docs:map:gen`.
   - H3: 3.6 Discovery (AML.TA0008)
   - H4: T-DISC-001: Tool Enumeration
   - H4: T-DISC-002: Session Data Extraction
-  - H3: 3.7 Collection & Exfiltration (AML.TA0009, AML.TA0010)
+  - H3: 3.7 Collection &amp; Exfiltration (AML.TA0009, AML.TA0010)
   - H4: T-EXFIL-001: Data Theft via webfetch
   - H4: T-EXFIL-002: Unauthorized Message Sending
   - H4: T-EXFIL-003: Credential Harvesting

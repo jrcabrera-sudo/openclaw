@@ -980,7 +980,7 @@ async function runSystemdLingerHealth(ctx: DoctorHealthFlowContext): Promise<voi
 }
 
 async function hasActiveGatewayExecCredential(
-  ctx: DoctorHealthFlowContext,
+  ctx: Pick<DoctorHealthFlowContext, "cfg">,
   mode: DoctorFlowMode = resolveDoctorMode(ctx.cfg),
 ): Promise<boolean> {
   const { resolveSecretInputRef } = await loadSecretTypesModule();
@@ -1733,7 +1733,7 @@ export function resolveDoctorHealthContributions(): DoctorHealthContribution[] {
     createDoctorHealthContribution({
       id: "doctor:legacy-cron",
       label: "Legacy cron",
-      healthCheckIds: ["core/doctor/legacy-whatsapp-crontab"],
+      healthCheckIds: ["core/doctor/legacy-whatsapp-crontab", "core/doctor/legacy-cron-store"],
       run: runLegacyCronHealth,
     }),
     createDoctorHealthContribution({
@@ -1784,18 +1784,37 @@ export function resolveDoctorHealthContributions(): DoctorHealthContribution[] {
     createDoctorHealthContribution({
       id: "doctor:startup-channel-maintenance",
       label: "Startup channel maintenance",
-      healthChecks: {
-        id: "core/doctor/channel-plugin-blockers",
-        description: "Configured channels must have loadable backing channel plugins.",
-        defaultEnabled: false,
-        async detect(ctx) {
-          const { channelPluginBlockerHitToHealthFinding, scanConfiguredChannelPluginBlockers } =
-            await import("../commands/doctor/shared/channel-plugin-blockers.js");
-          return scanConfiguredChannelPluginBlockers(ctx.cfg, process.env).map(
-            channelPluginBlockerHitToHealthFinding,
-          );
+      healthCheckIds: [
+        "core/doctor/channel-plugin-blockers",
+        "core/doctor/channel-preview-warnings",
+      ],
+      healthChecks: [
+        {
+          id: "core/doctor/channel-plugin-blockers",
+          description: "Configured channels must have loadable backing channel plugins.",
+          defaultEnabled: false,
+          async detect(ctx) {
+            const { channelPluginBlockerHitToHealthFinding, scanConfiguredChannelPluginBlockers } =
+              await import("../commands/doctor/shared/channel-plugin-blockers.js");
+            return scanConfiguredChannelPluginBlockers(ctx.cfg, process.env).map(
+              channelPluginBlockerHitToHealthFinding,
+            );
+          },
         },
-      },
+        {
+          id: "core/doctor/channel-preview-warnings",
+          description: "Channel doctor preview warnings are captured as structured findings.",
+          defaultEnabled: false,
+          async detect(ctx) {
+            const { collectChannelPreviewWarningHealthFindings } =
+              await import("./doctor-startup-channel-maintenance.js");
+            return collectChannelPreviewWarningHealthFindings({
+              cfg: ctx.cfg,
+              allowExec: ctx.allowExecSecretRefs === true,
+            });
+          },
+        },
+      ],
       run: runStartupChannelMaintenanceHealth,
     }),
     createDoctorHealthContribution({
@@ -1915,6 +1934,33 @@ export function resolveDoctorHealthContributions(): DoctorHealthContribution[] {
     createDoctorHealthContribution({
       id: "doctor:whatsapp-responsiveness",
       label: "WhatsApp responsiveness",
+      healthChecks: {
+        id: "core/doctor/whatsapp-responsiveness",
+        description:
+          "WhatsApp responsiveness pressure from degraded Gateway and local TUI clients.",
+        defaultEnabled: false,
+        async detect(ctx) {
+          const { collectWhatsappResponsivenessHealthFindings } =
+            await import("../commands/doctor-whatsapp-responsiveness.js");
+          let status: import("../commands/status.types.js").StatusSummary | undefined;
+          if (
+            !(
+              (await hasActiveGatewayExecCredential({ cfg: ctx.cfg })) &&
+              ctx.allowExecSecretRefs !== true
+            )
+          ) {
+            const { callGateway } = await import("../gateway/call.js");
+            status = await callGateway<import("../commands/status.types.js").StatusSummary>({
+              method: "status",
+              params: { includeChannelSummary: false },
+              timeoutMs: 3000,
+              config: ctx.cfg,
+              deviceIdentity: null,
+            }).catch(() => undefined);
+          }
+          return collectWhatsappResponsivenessHealthFindings({ cfg: ctx.cfg, status });
+        },
+      },
       run: runWhatsappResponsivenessHealth,
     }),
     createDoctorHealthContribution({

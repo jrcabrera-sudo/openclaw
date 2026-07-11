@@ -163,6 +163,8 @@ import {
   CrestodianSetupActivateResultSchema,
   CrestodianSetupDetectParamsSchema,
   CrestodianSetupDetectResultSchema,
+  CrestodianSetupVerifyParamsSchema,
+  CrestodianSetupVerifyResultSchema,
 } from "./crestodian.js";
 import {
   CronAddParamsSchema,
@@ -193,11 +195,18 @@ import {
 } from "./devices.js";
 import {
   EnvironmentSummarySchema,
+  EnvironmentsCreateParamsSchema,
+  EnvironmentsCreateResultSchema,
+  EnvironmentsDestroyParamsSchema,
+  EnvironmentsDestroyResultSchema,
   EnvironmentsListParamsSchema,
   EnvironmentsListResultSchema,
   EnvironmentsStatusParamsSchema,
   EnvironmentsStatusResultSchema,
   EnvironmentStatusSchema,
+  WorkerEnvironmentMetadataSchema,
+  WorkerEnvironmentStateSchema,
+  WorkerTunnelStatusSchema,
 } from "./environments.js";
 import {
   ExecApprovalsGetParamsSchema,
@@ -221,6 +230,21 @@ import {
   ShutdownEventSchema,
   TickEventSchema,
 } from "./frames.js";
+import { FsDirEntrySchema, FsListDirParamsSchema, FsListDirResultSchema } from "./fs.js";
+import {
+  GatewaySuspendBlockerSchema,
+  GatewaySuspendPrepareBusyResultSchema,
+  GatewaySuspendPrepareParamsSchema,
+  GatewaySuspendPrepareReadyResultSchema,
+  GatewaySuspendPrepareResultSchema,
+  GatewaySuspendResumeParamsSchema,
+  GatewaySuspendResumeResultSchema,
+  GatewaySuspendStatusReadyResultSchema,
+  GatewaySuspendStatusRunningResultSchema,
+  GatewaySuspendStatusParamsSchema,
+  GatewaySuspendStatusResultSchema,
+  GatewaySuspendTaskBlockerSchema,
+} from "./gateway-suspend.js";
 import {
   ChatAbortedEventSchema,
   ChatAbortParamsSchema,
@@ -258,6 +282,10 @@ import {
   NodePairListParamsSchema,
   NodePairRemoveParamsSchema,
   NodePairRejectParamsSchema,
+  NodePluginToolDescriptorSchema,
+  NodePluginToolsUpdateParamsSchema,
+  NodeSkillDescriptorSchema,
+  NodeSkillsUpdateParamsSchema,
   NodeRenameParamsSchema,
 } from "./nodes.js";
 import {
@@ -327,6 +355,10 @@ import {
   SessionsGroupsMutationResultSchema,
   SessionsGroupsPutParamsSchema,
   SessionsGroupsRenameParamsSchema,
+  SessionDiffFileSchema,
+  SessionDiffFileStatusSchema,
+  SessionsDiffParamsSchema,
+  SessionsDiffResultSchema,
   SessionsFilesGetParamsSchema,
   SessionsFilesGetResultSchema,
   SessionsFilesListParamsSchema,
@@ -394,6 +426,7 @@ import {
   WizardStatusResultSchema,
   WizardStepSchema,
 } from "./wizard.js";
+import { WorkerAdmissionHandshakeSchema } from "./worker-admission.js";
 import {
   WorktreeRecordSchema,
   WorktreesCreateParamsSchema,
@@ -413,6 +446,7 @@ import {
 export const ProtocolSchemas = {
   // Handshake, transport frames, state snapshots, and shared error envelopes.
   ConnectParams: ConnectParamsSchema,
+  WorkerAdmissionHandshake: WorkerAdmissionHandshakeSchema,
   HelloOk: HelloOkSchema,
   RequestFrame: RequestFrameSchema,
   ResponseFrame: ResponseFrameSchema,
@@ -422,10 +456,29 @@ export const ProtocolSchemas = {
   StateVersion: StateVersionSchema,
   Snapshot: SnapshotSchema,
   ErrorShape: ErrorShapeSchema,
+  GatewaySuspendTaskBlocker: GatewaySuspendTaskBlockerSchema,
+  GatewaySuspendBlocker: GatewaySuspendBlockerSchema,
+  GatewaySuspendPrepareParams: GatewaySuspendPrepareParamsSchema,
+  GatewaySuspendPrepareBusyResult: GatewaySuspendPrepareBusyResultSchema,
+  GatewaySuspendPrepareReadyResult: GatewaySuspendPrepareReadyResultSchema,
+  GatewaySuspendPrepareResult: GatewaySuspendPrepareResultSchema,
+  GatewaySuspendStatusParams: GatewaySuspendStatusParamsSchema,
+  GatewaySuspendStatusRunningResult: GatewaySuspendStatusRunningResultSchema,
+  GatewaySuspendStatusReadyResult: GatewaySuspendStatusReadyResultSchema,
+  GatewaySuspendStatusResult: GatewaySuspendStatusResultSchema,
+  GatewaySuspendResumeParams: GatewaySuspendResumeParamsSchema,
+  GatewaySuspendResumeResult: GatewaySuspendResumeResultSchema,
 
   // Environment and agent-facing control RPC payloads.
   EnvironmentStatus: EnvironmentStatusSchema,
+  WorkerEnvironmentState: WorkerEnvironmentStateSchema,
+  WorkerTunnelStatus: WorkerTunnelStatusSchema,
+  WorkerEnvironmentMetadata: WorkerEnvironmentMetadataSchema,
   EnvironmentSummary: EnvironmentSummarySchema,
+  EnvironmentsCreateParams: EnvironmentsCreateParamsSchema,
+  EnvironmentsCreateResult: EnvironmentsCreateResultSchema,
+  EnvironmentsDestroyParams: EnvironmentsDestroyParamsSchema,
+  EnvironmentsDestroyResult: EnvironmentsDestroyResultSchema,
   EnvironmentsListParams: EnvironmentsListParamsSchema,
   EnvironmentsListResult: EnvironmentsListResultSchema,
   EnvironmentsStatusParams: EnvironmentsStatusParamsSchema,
@@ -453,6 +506,9 @@ export const ProtocolSchemas = {
   WorktreeBranch: WorktreeBranchSchema,
   WorktreesBranchesParams: WorktreesBranchesParamsSchema,
   WorktreesBranchesResult: WorktreesBranchesResultSchema,
+  FsDirEntry: FsDirEntrySchema,
+  FsListDirParams: FsListDirParamsSchema,
+  FsListDirResult: FsListDirResultSchema,
 
   // Node pairing, invocation, presence, and pending-queue payloads.
   NodePairListParams: NodePairListParamsSchema,
@@ -461,6 +517,10 @@ export const ProtocolSchemas = {
   NodePairRemoveParams: NodePairRemoveParamsSchema,
   NodeRenameParams: NodeRenameParamsSchema,
   NodeListParams: NodeListParamsSchema,
+  NodePluginToolDescriptor: NodePluginToolDescriptorSchema,
+  NodePluginToolsUpdateParams: NodePluginToolsUpdateParamsSchema,
+  NodeSkillDescriptor: NodeSkillDescriptorSchema,
+  NodeSkillsUpdateParams: NodeSkillsUpdateParamsSchema,
   NodePendingAckParams: NodePendingAckParamsSchema,
   NodeDescribeParams: NodeDescribeParamsSchema,
   NodeInvokeParams: NodeInvokeParamsSchema,
@@ -508,6 +568,10 @@ export const ProtocolSchemas = {
   SessionsFilesListResult: SessionsFilesListResultSchema,
   SessionsFilesGetParams: SessionsFilesGetParamsSchema,
   SessionsFilesGetResult: SessionsFilesGetResultSchema,
+  SessionDiffFileStatus: SessionDiffFileStatusSchema,
+  SessionDiffFile: SessionDiffFileSchema,
+  SessionsDiffParams: SessionsDiffParamsSchema,
+  SessionsDiffResult: SessionsDiffResultSchema,
   SessionWorktreeInfo: SessionWorktreeInfoSchema,
   SessionsCreateParams: SessionsCreateParamsSchema,
   SessionsCreateResult: SessionsCreateResultSchema,
@@ -564,6 +628,8 @@ export const ProtocolSchemas = {
   CrestodianChatResult: CrestodianChatResultSchema,
   CrestodianSetupDetectParams: CrestodianSetupDetectParamsSchema,
   CrestodianSetupDetectResult: CrestodianSetupDetectResultSchema,
+  CrestodianSetupVerifyParams: CrestodianSetupVerifyParamsSchema,
+  CrestodianSetupVerifyResult: CrestodianSetupVerifyResultSchema,
   CrestodianSetupActivateParams: CrestodianSetupActivateParamsSchema,
   CrestodianSetupActivateResult: CrestodianSetupActivateResultSchema,
   WizardStartParams: WizardStartParamsSchema,

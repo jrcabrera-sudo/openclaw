@@ -104,6 +104,10 @@ export type LegacyStateDetection = {
     sourceDir: string;
     hasLegacy: boolean;
   };
+  apns: {
+    sourcePath: string;
+    hasLegacy: boolean;
+  };
   webPush: {
     subscriptionsPath: string;
     vapidKeysPath: string;
@@ -113,19 +117,16 @@ export type LegacyStateDetection = {
     sourcePath: string;
     hasLegacy: boolean;
   };
-  rescuePending: LegacyRescuePendingDetection;
-  channelPairing: LegacyChannelPairingStateDetection;
-  execApprovals: {
+  subagentRegistry: {
     sourcePath: string;
-    targetPath: string;
     hasLegacy: boolean;
   };
+  rescuePending: LegacyRescuePendingDetection;
+  channelPairing: LegacyChannelPairingStateDetection;
   warnings: string[];
   notices: string[];
   preview: string[];
 };
-
-export type LegacyExecApprovalsMigrationDetection = LegacyStateDetection["execApprovals"];
 
 export type MigrationLogger = {
   info: (message: string) => void;

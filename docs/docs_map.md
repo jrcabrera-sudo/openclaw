@@ -311,6 +311,7 @@ Do not edit it by hand; run `pnpm docs:map:gen`.
 - Route: /channels/clickclack
 - Headings:
   - H2: Quick setup
+  - H3: Alternative: manual token
   - H3: Alternative: env-based token
   - H3: JSON5 reference
   - H3: Account config keys
@@ -4115,6 +4116,7 @@ Do not edit it by hand; run `pnpm docs:map:gen`.
   - H2: Env var substitution in config
   - H2: Secret refs vs ${ENV} strings
   - H2: Path-related env vars
+  - H2: Agent helper tool downloads
   - H2: Logging
   - H3: OPENCLAWHOME
   - H2: nvm users: webfetch TLS failures

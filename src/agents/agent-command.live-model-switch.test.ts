@@ -172,6 +172,7 @@ vi.mock("./command/run-context.js", () => ({
 
 vi.mock("./command/session-store.runtime.js", () => ({
   loadSessionEntry: (...args: unknown[]) => state.loadSessionEntryMock(...args),
+  loadSessionEntryReadOnly: (...args: unknown[]) => state.loadSessionEntryMock(...args),
   updateSessionStoreAfterAgentRun: (...args: unknown[]) =>
     state.updateSessionStoreAfterAgentRunMock(...args),
 }));
@@ -281,13 +282,13 @@ vi.mock("./agent-runtime-config.js", () => {
   };
 });
 
-vi.mock("../config/runtime-snapshot.js", () => ({
-  setRuntimeConfigSnapshot: vi.fn(),
+vi.mock("../plugins/plugin-metadata-snapshot.js", () => ({
+  isPluginMetadataSnapshotCompatible: () => false,
+  resolvePluginMetadataSnapshot: () => ({ plugins: [] }),
 }));
 
-// Model selection is mocked below, so plugin discovery cannot affect these assertions.
-vi.mock("../plugins/manifest-contract-eligibility.js", () => ({
-  loadManifestMetadataSnapshot: () => ({ plugins: [] }),
+vi.mock("../config/runtime-snapshot.js", () => ({
+  setRuntimeConfigSnapshot: vi.fn(),
 }));
 
 vi.mock("../config/sessions.js", () => ({
@@ -1330,7 +1331,6 @@ describe("agentCommand – LiveSessionModelSwitchError retry", () => {
       agents: {
         defaults: {
           models: state.defaultRuntimeConfig.agents.defaults.models,
-          cliBackends: { codex: { command: "codex" } },
         },
       },
     };

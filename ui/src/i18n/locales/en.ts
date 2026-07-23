@@ -3641,6 +3641,15 @@ export const en: TranslationMap = {
   },
   login: {
     subtitle: "Gateway Dashboard",
+    deviceAuthMigration: {
+      banner: "This browser still needs one-time device approval after the update.",
+      action: "Secure this browser",
+      secureContextRequired:
+        "This legacy browser remains available temporarily. Reopen it over HTTPS or localhost to secure it with device identity.",
+      pendingUnavailable: "The browser pairing request is not available yet. Retry in a moment.",
+      loadFailed: "Could not load this browser's pairing request: {error}",
+      approvalFailed: "Could not secure this browser: {error}",
+    },
     passwordPlaceholder: "optional",
     showToken: "Show token",
     hideToken: "Hide token",
@@ -3748,6 +3757,19 @@ export const en: TranslationMap = {
     },
     outputTokens: "{count} output tokens",
     archivedSessionDisabled: "This session is archived. Unarchive it to continue the conversation.",
+    sessionSharing: {
+      menu: "Thread sharing",
+      current: "Thread visibility: {visibility}",
+      visibility: "Visibility",
+      shared: "Shared",
+      readOnly: "Read-only",
+      suggest: "Suggest",
+      draft: "Draft",
+      members: "Members",
+      selected: "Member",
+      noPeople: "No paired people found.",
+      readOnlyNotice: "Only the thread owner and members can act in this thread.",
+    },
     loadOlder: "Load older",
     sessionHeader: {
       renameTooltip: "Rename thread",

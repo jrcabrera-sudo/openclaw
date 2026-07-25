@@ -124,35 +124,35 @@ describe("AppSidebar session pagination", () => {
       sidebar.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`);
 
     expect(rows()).toHaveLength(10);
-    expect(button("Load more threads")).not.toBeNull();
+    expect(button("Show more")).not.toBeNull();
     expect(button("Collapse")).toBeNull();
 
-    button("Load more threads")?.click();
+    button("Show more")?.click();
     await sidebar.updateComplete;
     expect(rows()).toHaveLength(20);
     expect(button("Collapse")).toBeNull();
 
-    button("Load more threads")?.click();
+    button("Show more")?.click();
     await sidebar.updateComplete;
     expect(rows()).toHaveLength(30);
     expect(button("Collapse")).toBeNull();
 
-    button("Load more threads")?.click();
+    button("Show more")?.click();
     await sidebar.updateComplete;
     expect(rows()).toHaveLength(40);
-    expect(button("Load more threads")).not.toBeNull();
+    expect(button("Show more")).not.toBeNull();
     expect(button("Collapse")).not.toBeNull();
 
-    button("Load more threads")?.click();
+    button("Show more")?.click();
     await sidebar.updateComplete;
     expect(rows()).toHaveLength(41);
-    expect(button("Load more threads")).toBeNull();
+    expect(button("Show more")).toBeNull();
     expect(button("Collapse")).not.toBeNull();
 
     button("Collapse")?.click();
     await sidebar.updateComplete;
     expect(rows()).toHaveLength(10);
-    expect(button("Load more threads")).not.toBeNull();
+    expect(button("Show more")).not.toBeNull();
     expect(button("Collapse")).toBeNull();
   });
 });
@@ -271,7 +271,7 @@ describe("AppSidebar session source lifecycle", () => {
     const { sidebar } = await mountSidebar(gateway.gateway, sessions.sessions);
     const cachedResult = sidebar.sessionData.sessionsResult;
 
-    gateway.publish({ connected: false, reconnecting: true });
+    gateway.publish({ phase: "reconnecting" });
     sessions.publish({ result: null, agentId: null, loading: false });
     await sidebar.updateComplete;
 
@@ -280,7 +280,7 @@ describe("AppSidebar session source lifecycle", () => {
     expect(Object.keys(sidebar.sessionData.sessionRowsByAgent)).toEqual(["main"]);
     expect([...sidebar.sessionData.sessionCreatedOrder.keys()]).toEqual(["main-a", "main-b"]);
 
-    gateway.publish({ connected: true, reconnecting: false });
+    gateway.publish({ phase: "connected" });
     const partial = createSessionState("main", ["main-a"]);
     sessions.publish({ result: partial.result, agentId: partial.agentId });
     await sidebar.updateComplete;
@@ -311,8 +311,7 @@ describe("AppSidebar session source lifecycle", () => {
 
     gateway.publish({
       client: {} as GatewayBrowserClient,
-      connected: false,
-      reconnecting: true,
+      phase: "reconnecting",
     });
     await sidebar.updateComplete;
 
@@ -481,10 +480,11 @@ describe("AppSidebar session mutation feedback", () => {
 
     await vi.waitFor(() => expect(harness.patch).toHaveBeenCalledTimes(2));
     await vi.waitFor(() => expect(setSessionKey).toHaveBeenLastCalledWith(archivedRow.key));
+    // Undo restores through the batch helper, which refreshes once at the end.
     expect(harness.patch).toHaveBeenLastCalledWith(
       archivedRow.key,
       { archived: false, pinned: true },
-      { agentId: "main" },
+      { agentId: "main", deferListRefresh: true },
     );
     expect(navigate).toHaveBeenLastCalledWith("chat", {
       search: "?session=agent%3Amain%3Aa",
@@ -614,8 +614,8 @@ describe("AppSidebar session mutation feedback", () => {
     menu.querySelector<HTMLButtonElement>('[data-shortcut="p"]')?.click();
     await waitForFast(() => expect(harness.patch).toHaveBeenCalledOnce());
 
-    gateway.publish({ connected: false, reconnecting: true });
-    gateway.publish({ connected: true, reconnecting: false });
+    gateway.publish({ phase: "reconnecting" });
+    gateway.publish({ phase: "connected" });
     pending.reject(new Error("late old-connection rejection"));
     await pending.promise.catch(() => undefined);
     await Promise.resolve();
@@ -639,8 +639,8 @@ describe("AppSidebar session mutation feedback", () => {
     menu?.querySelector<HTMLButtonElement>('[data-shortcut="a"]')?.click();
     await waitForFast(() => expect(harness.patch).toHaveBeenCalledOnce());
 
-    gateway.publish({ connected: false, reconnecting: true });
-    gateway.publish({ connected: true, reconnecting: false });
+    gateway.publish({ phase: "reconnecting" });
+    gateway.publish({ phase: "connected" });
     pending.resolve(successfulSessionPatch("agent:main:a"));
     await pending.promise;
     await new Promise<void>((resolve) => {
@@ -698,8 +698,8 @@ describe("AppSidebar session mutation feedback", () => {
     const confirmSpy = vi.spyOn(window, "confirm").mockImplementation(() => {
       confirmations += 1;
       if (confirmations === 2) {
-        gateway.publish({ connected: false, reconnecting: true });
-        gateway.publish({ connected: true, reconnecting: false });
+        gateway.publish({ phase: "reconnecting" });
+        gateway.publish({ phase: "connected" });
       }
       return true;
     });

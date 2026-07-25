@@ -6,7 +6,7 @@ import { resolveNonNegativeIntegerOption } from "openclaw/plugin-sdk/number-runt
 import { sleepWithAbort } from "openclaw/plugin-sdk/runtime-env";
 import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import type { FileChooser, Frame, Page } from "playwright-core";
-import { formatErrorMessage } from "../infra/errors.js";
+import { formatErrorMessage, toErrorObject } from "../infra/errors.js";
 import {
   ACT_MAX_BATCH_ACTIONS,
   ACT_MAX_BATCH_DEPTH,
@@ -16,6 +16,7 @@ import {
   resolveActInteractionTimeoutMs,
   resolveActWaitTimeoutMs,
 } from "./act-policy.js";
+import type { BrowserBatchAbort, BrowserBatchActionResult } from "./client-actions-types.js";
 import type { BrowserActRequest, BrowserFormField } from "./client-actions.types.js";
 import type { BrowserDownloadResult } from "./download-types.js";
 import { normalizeBrowserEvaluateFunctionSource } from "./evaluate-source.js";
@@ -116,7 +117,7 @@ function reconcileRemoteDialogAfterActionSettled(page: Page, signal?: AbortSigna
 
 function throwIfInteractionAborted(signal?: AbortSignal): void {
   if (signal?.aborted) {
-    throw toLintErrorObject(signal.reason ?? new Error("aborted"), "Non-Error rejection");
+    throw toErrorObject(signal.reason ?? new Error("aborted"), "Non-Error rejection");
   }
 }
 
@@ -237,7 +238,7 @@ async function assertObservedDelayedNavigations(
     });
   }
   if (subframeError) {
-    throw toLintErrorObject(subframeError, "Non-Error thrown");
+    throw toErrorObject(subframeError, "Non-Error thrown");
   }
 }
 
@@ -323,7 +324,7 @@ function scheduleDelayedInteractionNavigationGuard(
     const settle = (err?: unknown) => {
       cleanup();
       if (err) {
-        reject(toLintErrorObject(err, "Non-Error rejection"));
+        reject(toErrorObject(err, "Non-Error rejection"));
         return;
       }
       resolve();
@@ -477,11 +478,11 @@ async function assertInteractionNavigationCompletedSafely<T>(
   }
 
   if (subframeError) {
-    throw toLintErrorObject(subframeError, "Non-Error thrown");
+    throw toErrorObject(subframeError, "Non-Error thrown");
   }
 
   if (actionError) {
-    throw toLintErrorObject(actionError, "Non-Error thrown");
+    throw toErrorObject(actionError, "Non-Error thrown");
   }
   return result as T;
 }
@@ -614,7 +615,7 @@ async function awaitNavigationGuardedInteraction<T>(
       // alive until the raw action settles; otherwise an aborted caller could
       // select a page before a later preservation failure is quarantined.
       await guardedAction;
-      throw toLintErrorObject(observedPolicyError, "Non-Error thrown");
+      throw toErrorObject(observedPolicyError, "Non-Error thrown");
     }
     throw err;
   }
@@ -642,13 +643,13 @@ function createAbortPromiseWithListener(
     ? (() => {
         onAbort?.(signal.reason);
         return Promise.reject(
-          toLintErrorObject(signal.reason ?? new Error("aborted"), "Non-Error rejection"),
+          toErrorObject(signal.reason ?? new Error("aborted"), "Non-Error rejection"),
         );
       })()
     : new Promise((_, reject) => {
         abortListener = () => {
           onAbort?.(signal.reason);
-          reject(toLintErrorObject(signal.reason ?? new Error("aborted"), "Non-Error rejection"));
+          reject(toErrorObject(signal.reason ?? new Error("aborted"), "Non-Error rejection"));
         };
         signal.addEventListener("abort", abortListener, { once: true });
       });
@@ -1953,7 +1954,8 @@ export async function executeActViaPlaywright(
   } & BrowserNavigationPolicyOptions,
 ): Promise<{
   result?: unknown;
-  results?: Array<{ ok: boolean; error?: string }>;
+  results?: BrowserBatchActionResult[];
+  aborted?: BrowserBatchAbort;
   blockedByDialog?: boolean;
   browserState?: unknown;
   downloads?: BrowserDownloadResult[];
@@ -1995,6 +1997,7 @@ export async function executeActViaPlaywright(
       const batch = await batchViaPlaywright({
         cdpUrl: opts.cdpUrl,
         targetId: opts.targetId,
+        page,
         ...navigationPolicy,
         actions: opts.action.actions,
         stopOnError: opts.action.stopOnError,
@@ -2004,6 +2007,7 @@ export async function executeActViaPlaywright(
       const newDownloads = await drainDownloads();
       return {
         results: batch.results,
+        ...(batch.aborted ? { aborted: batch.aborted } : {}),
         ...(newDownloads ? { downloads: newDownloads } : {}),
       };
     }
@@ -2059,13 +2063,14 @@ export async function batchViaPlaywright(
   opts: {
     cdpUrl: string;
     targetId?: string;
+    page?: Page;
     actions: BrowserActRequest[];
     stopOnError?: boolean;
     evaluateEnabled?: boolean;
     depth?: number;
     signal?: AbortSignal;
   } & BrowserNavigationPolicyOptions,
-): Promise<{ results: Array<{ ok: boolean; error?: string }> }> {
+): Promise<{ results: BrowserBatchActionResult[]; aborted?: BrowserBatchAbort }> {
   const navigationPolicy = interactionNavigationPolicy(opts);
   const depth = opts.depth ?? 0;
   if (depth > ACT_MAX_BATCH_DEPTH) {
@@ -2074,50 +2079,101 @@ export async function batchViaPlaywright(
   if (opts.actions.length > ACT_MAX_BATCH_ACTIONS) {
     throw new Error(`Batch exceeds maximum of ${ACT_MAX_BATCH_ACTIONS} actions`);
   }
-  const results: Array<{ ok: boolean; error?: string }> = [];
-  for (const action of opts.actions) {
-    if (opts.signal?.aborted) {
-      throw opts.signal.reason ?? new Error("aborted");
+  const page = opts.page ?? (await getPageForTargetId(opts));
+  const results: BrowserBatchActionResult[] = [];
+  const finishAborted = (
+    reason: BrowserBatchAbort["reason"],
+    afterAction: number,
+    url: string,
+    skipped: number,
+  ) =>
+    skipped === 0
+      ? { results }
+      : { results, aborted: { reason, afterAction, url, skipped } satisfies BrowserBatchAbort };
+  let mainFrameNavigations = 0;
+  let navigationsAtLastDispatch = 0;
+  const currentMainFrameUrl = () => page.mainFrame?.().url() ?? page.url();
+  const onFrameNavigated = (frame: Frame) => {
+    if (frame === page.mainFrame?.()) {
+      mainFrameNavigations += 1;
     }
-    try {
-      await executeSingleAction(
-        action,
-        opts.cdpUrl,
-        opts.targetId,
-        opts.evaluateEnabled,
-        navigationPolicy,
-        depth,
-        opts.signal,
-      );
-      results.push({ ok: true });
-    } catch (err) {
-      if (isBrowserObservedDialogBlockedError(err)) {
-        throw err;
+  };
+  const finishNavigation = (afterAction: number, skipped: number) => {
+    const url = currentMainFrameUrl();
+    const lastResult = results.at(-1);
+    if (lastResult) {
+      results[results.length - 1] = { ...lastResult, navigated: true, url };
+    }
+    return finishAborted("navigation", afterAction, url, skipped);
+  };
+
+  // Snapshot refs are document-scoped, so any committed main-frame navigation
+  // ends the batch. A commit after the next action dispatch is inherently unguardable;
+  // callers that expect navigation can use separate act calls as the escape hatch.
+  page.on?.("framenavigated", onFrameNavigated);
+  try {
+    for (const [index, action] of opts.actions.entries()) {
+      if (opts.signal?.aborted) {
+        throw opts.signal.reason ?? new Error("aborted");
       }
-      if (isPolicyDenyNavigationError(err)) {
-        throw err;
+      if (mainFrameNavigations > navigationsAtLastDispatch) {
+        return finishNavigation(index, opts.actions.length - index);
       }
-      const message = formatErrorMessage(err);
-      results.push({ ok: false, error: message });
-      if (opts.stopOnError !== false) {
-        break;
+      if (page.isClosed?.()) {
+        return finishAborted("closed", index, currentMainFrameUrl(), opts.actions.length - index);
+      }
+      navigationsAtLastDispatch = mainFrameNavigations;
+      try {
+        await executeSingleAction(
+          action,
+          opts.cdpUrl,
+          opts.targetId,
+          opts.evaluateEnabled,
+          navigationPolicy,
+          depth,
+          opts.signal,
+        );
+        results.push({ ok: true });
+        if (page.isClosed?.()) {
+          return finishAborted(
+            "closed",
+            index + 1,
+            currentMainFrameUrl(),
+            opts.actions.length - index - 1,
+          );
+        }
+        if (mainFrameNavigations > navigationsAtLastDispatch) {
+          return finishNavigation(index + 1, opts.actions.length - index - 1);
+        }
+      } catch (err) {
+        if (isBrowserObservedDialogBlockedError(err)) {
+          throw err;
+        }
+        if (isPolicyDenyNavigationError(err)) {
+          throw err;
+        }
+        const message = formatErrorMessage(err);
+        results.push({ ok: false, error: message });
+        if (page.isClosed?.()) {
+          return finishAborted(
+            "closed",
+            index + 1,
+            currentMainFrameUrl(),
+            opts.actions.length - index - 1,
+          );
+        }
+        if (mainFrameNavigations > navigationsAtLastDispatch) {
+          return finishNavigation(index + 1, opts.actions.length - index - 1);
+        }
+        if (opts.stopOnError !== false) {
+          break;
+        }
       }
     }
+    return { results };
+  } finally {
+    page.off?.("framenavigated", onFrameNavigated);
   }
-  return { results };
 }
 
-function toLintErrorObject(value: unknown, fallbackMessage: string): Error {
-  if (value instanceof Error) {
-    return value;
-  }
-  if (typeof value === "string") {
-    return new Error(value);
-  }
-  const error = new Error(fallbackMessage, { cause: value });
-  if ((typeof value === "object" && value !== null) || typeof value === "function") {
-    Object.assign(error, value);
-  }
-  return error;
-}
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

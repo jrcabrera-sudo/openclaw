@@ -81,9 +81,8 @@ function deferred<T>() {
 function createGateway(client: GatewayBrowserClient): MutableGateway {
   let snapshot: ApplicationGatewaySnapshot = {
     client,
-    connected: true,
+    phase: "connected",
     offlineStable: false,
-    reconnecting: false,
     hello: null,
     assistantAgentId: null,
     sessionKey: "main",
@@ -216,14 +215,24 @@ describe("sessions page lifecycle", () => {
     });
 
     const archived = [
-      ...page.querySelectorAll<HTMLButtonElement>(".sessions-view-segment button"),
-    ].find((button) => button.textContent?.trim() === "Archived");
-    archived?.click();
+      ...page.querySelectorAll<HTMLElement & { checked: boolean }>(
+        ".sessions-view-segment wa-radio",
+      ),
+    ].find((radio) => radio.textContent?.trim() === "Archived");
+    const group = archived?.closest<HTMLElement & { value: string }>("wa-radio-group");
+    if (group) {
+      group.value = "archived";
+      group.dispatchEvent(new Event("change", { bubbles: true }));
+    }
     await page.updateComplete;
 
     expect(page.statusFilter).toBe("archived");
     expect(context.navigate).toHaveBeenCalledWith("sessions", { search: "?status=archived" });
-    expect(archived?.getAttribute("aria-pressed")).toBe("true");
+    expect(
+      [...page.querySelectorAll<HTMLElement & { checked: boolean }>("wa-radio")].find(
+        (radio) => radio.textContent?.trim() === "Archived",
+      )?.checked,
+    ).toBe(true);
   });
 
   it("re-enumerates all archived sessions before bulk deletion", async () => {
@@ -608,8 +617,8 @@ describe("sessions page lifecycle", () => {
     const client = {} as GatewayBrowserClient;
     const mutableGateway = createGateway(client);
     const preloadedSnapshot = mutableGateway.gateway.snapshot;
-    mutableGateway.emit({ connected: false, client });
-    mutableGateway.emit({ connected: true, client });
+    mutableGateway.emit({ phase: "reconnecting", client });
+    mutableGateway.emit({ phase: "connected", client });
     const freshResult = { count: 1, sessions: [{ key: "fresh" }] } as SessionsListResult;
     const sessions = createSessions({ list: vi.fn(async () => freshResult) });
     const context = createContext(mutableGateway.gateway, sessions);
@@ -691,7 +700,7 @@ describe("sessions page lifecycle", () => {
     page.checkpointBusyKey = "busy";
     page.sessionMutationPending = true;
 
-    mutableGateway.emit({ connected: false, client });
+    mutableGateway.emit({ phase: "reconnecting", client });
 
     expect(page.checkpointLoadingKey).toBeNull();
     expect(page.checkpointBusyKey).toBeNull();
@@ -713,7 +722,7 @@ describe("sessions page lifecycle", () => {
       trigger,
     );
 
-    mutableGateway.emit({ connected: false, client });
+    mutableGateway.emit({ phase: "reconnecting", client });
 
     expect(page.sessionMenu).toBeNull();
     expect(page.sessionMenuTrigger).toBeNull();
@@ -859,7 +868,7 @@ describe("sessions page lifecycle", () => {
       expect(request).toHaveBeenCalledWith("workboard.cards.create", expect.any(Object)),
     );
 
-    mutableGateway.emit({ connected: false, client });
+    mutableGateway.emit({ phase: "reconnecting", client });
     deleted.resolve({ deleted: ["main"], errors: ["stale delete error"], preservedWorktrees: [] });
     patched.resolve({ ok: true });
     forked.resolve("forked");

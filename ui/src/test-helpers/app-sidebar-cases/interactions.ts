@@ -134,18 +134,22 @@ describe("AppSidebar multi-select", () => {
     menu.querySelector<HTMLButtonElement>('[data-shortcut="a"]')?.click();
 
     await waitForFast(() => expect(harness.patch).toHaveBeenCalledTimes(2));
+    // Each row defers its canonical list refresh; the batch pays one refresh at
+    // the end instead of a full sessions.list round trip per archived row.
     expect(harness.patch).toHaveBeenNthCalledWith(
       1,
       "agent:main:a",
       { archived: true },
-      { agentId: "main" },
+      { agentId: "main", deferListRefresh: true },
     );
     expect(harness.patch).toHaveBeenNthCalledWith(
       2,
       "agent:main:b",
       { archived: true },
-      { agentId: "main" },
+      { agentId: "main", deferListRefresh: true },
     );
+    await waitForFast(() => expect(harness.refreshReplacement).toHaveBeenCalledTimes(1));
+    expect(harness.refreshReplacement).toHaveBeenCalledWith("main");
   });
 
   it("deletes the selection in one batch after a single confirm", async () => {
@@ -258,7 +262,7 @@ describe("AppSidebar transient menus", () => {
     await sidebar.updateComplete;
     const firstMenu = sidebar.querySelector<HTMLElement>(".sidebar-agent-menu");
     const settingsItem = firstMenu?.querySelector<HTMLElement>(
-      'wa-dropdown-item[value="command:settings"]',
+      'wa-dropdown-item[value="command:agent-settings"]',
     );
     expect(firstMenu).not.toBeNull();
     expect(settingsItem).not.toBeNull();

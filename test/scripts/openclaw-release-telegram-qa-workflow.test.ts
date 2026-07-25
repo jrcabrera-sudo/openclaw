@@ -25,6 +25,7 @@ type WorkflowJob = {
     run?: string;
     uses?: string;
     with?: Record<string, unknown>;
+    "working-directory"?: string;
   }>;
   uses?: string;
   with?: Record<string, unknown>;
@@ -459,6 +460,22 @@ describe("release Telegram QA workflow", () => {
     }
   });
 
+  it("resolves pnpm from the candidate package-manager pin", () => {
+    const buildJob = workflowJob("build_candidate");
+    const installStep = workflowStep(
+      buildJob,
+      "Install candidate dependencies without runner credentials",
+    );
+    const buildStep = workflowStep(buildJob, "Build candidate runtime without runner credentials");
+
+    expect(installStep["working-directory"]).toBe(".candidate");
+    expect(installStep.run).toContain("pnpm install");
+    expect(installStep.run).not.toContain("pnpm --dir .candidate");
+    expect(buildStep["working-directory"]).toBe(".candidate");
+    expect(buildStep.run).toContain("pnpm exec node scripts/build-all.mjs qaRuntime");
+    expect(buildStep.run).not.toContain("pnpm --dir .candidate");
+  });
+
   it("allows the tracked-file index to exceed Node's default child-process buffer", () => {
     const compareStep = workflowStep(
       workflowJob("attest_candidate"),
@@ -595,9 +612,14 @@ describe("release Telegram QA workflow", () => {
       "Telegram channel canary failed; skipping the remaining scenarios.",
     );
     expect(runStep?.run).toContain("--list-scenarios");
-    expect(runStep?.run).toContain('"$scenario_id" != "channel-canary"');
+    expect(runStep?.run).toContain('if [[ "$scenario_id" == "channel-canary" ]]; then');
+    expect(runStep?.run).toContain("has_channel_canary=true");
+    expect(runStep?.run).toContain("Candidate Telegram QA catalog has no default scenarios.");
     expect(runStep?.run).toContain(
       'run_qa_attempt "attempt-${attempt}" "${remaining_scenarios[@]}"',
+    );
+    expect(runStep?.run?.indexOf("--list-scenarios")).toBeLessThan(
+      runStep?.run?.indexOf("run_qa_attempt preflight --scenario channel-canary") ?? -1,
     );
     expect(
       runStep?.run?.indexOf("run_qa_attempt preflight --scenario channel-canary"),

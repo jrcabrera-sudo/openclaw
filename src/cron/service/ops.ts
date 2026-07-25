@@ -11,7 +11,7 @@ import {
 import { enqueueCommandInLane, type CommandLaneTaskMarker } from "../../process/command-queue.js";
 import { runWithGatewayIndependentRootWorkContinuation } from "../../process/gateway-work-admission.js";
 import { CommandLane } from "../../process/lanes.js";
-import { DEFAULT_AGENT_ID } from "../../routing/session-key.js";
+import { parseAgentSessionKey } from "../../routing/session-key.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import {
   clearCronJobActive,
@@ -23,6 +23,11 @@ import {
 import { resolveCronListSnapshotRevision } from "../list-snapshot-revision.js";
 import { createCronRunDiagnosticsFromError } from "../run-diagnostics.js";
 import { cronSchedulingInputsEqual } from "../schedule-identity.js";
+import {
+  deleteCronJobScratch,
+  readCronJobScratchState,
+  writeCronJobScratch,
+} from "../scratch-store.js";
 import { createCronStreamSourceIdentity, cronStreamScheduleKey } from "../stream-schedule.js";
 import { normalizeCronTaskRunJobId } from "../task-run-history.js";
 import type {
@@ -79,6 +84,7 @@ import type {
   CronAddOptions,
   CronEvent,
   CronServiceState,
+  CronUpdateOptions,
   CronUpdatePrecondition,
   CronWakeMode,
 } from "./state.js";
@@ -361,6 +367,39 @@ export async function readJob(state: CronServiceState, id: string) {
   });
 }
 
+/** Reads one job's private scratch state after proving the job exists in this store. */
+export async function readScratch(state: CronServiceState, id: string) {
+  return await locked(state, async () => {
+    await ensureLoaded(state, { skipRecompute: true });
+    findJobOrThrow(state, id);
+    // Scratch intentionally opens the process-global state DB, matching every
+    // other cron store write in this service (see saveCronJobsStore); threading
+    // injected state-db options through CronServiceState is a service-wide
+    // refactor that must move jobs and scratch together, not scratch alone.
+    return readCronJobScratchState(state.deps.storePath, id);
+  });
+}
+
+/** Writes or clears one job's private scratch under the cron mutation lock. */
+export async function writeScratch(
+  state: CronServiceState,
+  id: string,
+  params: { content: string | null; expectedRevision?: number; sourceSha256?: string },
+) {
+  return await locked(state, async () => {
+    await ensureLoaded(state, { skipRecompute: true });
+    findJobOrThrow(state, id);
+    return writeCronJobScratch({
+      storePath: state.deps.storePath,
+      jobId: id,
+      content: params.content,
+      expectedRevision: params.expectedRevision,
+      sourceSha256: params.sourceSha256,
+      nowMs: state.deps.nowMs(),
+    });
+  });
+}
+
 /** Record a terminal failure from a scheduler-owned event source. */
 export async function recordExternalFailure(
   state: CronServiceState,
@@ -522,14 +561,17 @@ function resolveJobLastRunStatus(job: CronJob): CronJobsLastRunStatusFilter {
 }
 
 function resolveEffectiveJobAgentId(
-  job: { agentId?: string | null },
+  job: { agentId?: string | null; sessionKey?: string | null },
   defaultAgentId: string | undefined,
 ) {
-  return (
+  const agentId =
     normalizeOptionalAgentId(job.agentId) ??
-    normalizeOptionalAgentId(defaultAgentId) ??
-    DEFAULT_AGENT_ID
-  );
+    normalizeOptionalAgentId(parseAgentSessionKey(job.sessionKey)?.agentId) ??
+    normalizeOptionalAgentId(defaultAgentId);
+  if (!agentId) {
+    throw new Error("Cron job requires an agent id or prepared configured default.");
+  }
+  return agentId;
 }
 
 function resolveCurrentDefaultAgentId(state: CronServiceState): string | undefined {
@@ -557,7 +599,7 @@ export async function listPage(state: CronServiceState, opts?: CronListPageOptio
       }
       if (
         requestedAgentId &&
-        resolveEffectiveJobAgentId(job, state.deps.defaultAgentId) !== requestedAgentId
+        resolveEffectiveJobAgentId(job, resolveCurrentDefaultAgentId(state)) !== requestedAgentId
       ) {
         return false;
       }
@@ -718,6 +760,7 @@ function declarativeFields(job: CronJob, includeEnabled: boolean) {
     pacing: job.pacing,
     trigger: job.trigger,
     payload: job.payload,
+    scheduledToolPolicy: job.scheduledToolPolicy,
     delivery: job.delivery,
     displayName: job.displayName,
     ...(includeEnabled ? { enabled: job.enabled } : {}),
@@ -773,6 +816,7 @@ export async function add(state: CronServiceState, input: CronJobCreate, opts?: 
         enabledExplicit: opts?.enabledExplicit === true,
         nowMs: now,
         cronConfig: state.deps.cronConfig,
+        scheduledToolPolicy: opts?.scheduledToolPolicy,
       });
       const includeEnabled = opts?.enabledExplicit === true;
       if (
@@ -799,7 +843,9 @@ export async function add(state: CronServiceState, input: CronJobCreate, opts?: 
       throw new Error(`cron job already exists: ${normalizedId}`);
     }
     const snapshot = snapshotStoreForRollback(state);
-    const job = createJob(state, normalizedInput);
+    const job = createJob(state, normalizedInput, {
+      scheduledToolPolicy: opts?.scheduledToolPolicy,
+    });
     state.store?.jobs.push(job);
 
     // Auto-disable notifications describe durable state, so publish them only
@@ -842,8 +888,9 @@ async function updateLoadedJob(params: {
   id: string;
   patch: CronJobPatch;
   precondition?: CronUpdatePrecondition;
+  opts?: CronUpdateOptions;
 }) {
-  const { state, id, patch, precondition } = params;
+  const { state, id, patch, precondition, opts } = params;
   warnIfDisabled(state, "update");
   // Mirrors the add-time boundary: no caller may patch a job into (or edit)
   // the system-owned heartbeat payload; the gateway converges via add only.
@@ -869,6 +916,7 @@ async function updateLoadedJob(params: {
     defaultAgentId: state.deps.defaultAgentId,
     scheduleValidationNowMs: now,
     cronConfig: state.deps.cronConfig,
+    scheduledToolPolicy: opts?.scheduledToolPolicy,
   });
   if (patch.agentId !== undefined) {
     const agentId = resolveEffectiveJobAgentId(nextJob, resolveCurrentDefaultAgentId(state));
@@ -892,8 +940,13 @@ async function updateLoadedJob(params: {
 }
 
 /** Updates a cron job patch in-place, recomputes affected schedule state, and persists it. */
-export async function update(state: CronServiceState, id: string, patch: CronJobPatch) {
-  return await locked(state, async () => await updateLoadedJob({ state, id, patch }));
+export async function update(
+  state: CronServiceState,
+  id: string,
+  patch: CronJobPatch,
+  opts?: CronUpdateOptions,
+) {
+  return await locked(state, async () => await updateLoadedJob({ state, id, patch, opts }));
 }
 
 /** Updates a cron job only after a store-locked caller precondition passes. */
@@ -902,8 +955,12 @@ export async function updateWithPrecondition(
   id: string,
   patch: CronJobPatch,
   precondition: CronUpdatePrecondition,
+  opts?: CronUpdateOptions,
 ) {
-  return await locked(state, async () => await updateLoadedJob({ state, id, patch, precondition }));
+  return await locked(
+    state,
+    async () => await updateLoadedJob({ state, id, patch, precondition, opts }),
+  );
 }
 
 /** Removes a cron job by id and re-arms the timer when the in-memory store changes. */
@@ -941,6 +998,15 @@ export async function remove(
       postPersistAutoDisableNotifications,
       suppressScheduledJobId: id,
     });
+    if (removed) {
+      try {
+        deleteCronJobScratch(state.deps.storePath, id);
+      } catch (error) {
+        // The job deletion is already durable. Scratch cleanup is idempotent and
+        // must not turn a committed removal into a retryable API failure.
+        state.deps.log.warn({ jobId: id, err: String(error) }, "cron: scratch cleanup failed");
+      }
+    }
     armTimer(state);
     if (removed) {
       emit(state, { jobId: id, action: "removed", job: removedJob });
@@ -1001,6 +1067,16 @@ export async function removeAgentJobsTransactional<T>(
         );
       }
       throw error;
+    }
+    for (const job of removedJobs) {
+      try {
+        deleteCronJobScratch(state.deps.storePath, job.id);
+      } catch (error) {
+        state.deps.log.warn(
+          { jobId: job.id, err: String(error) },
+          "cron: agent scratch cleanup failed",
+        );
+      }
     }
     armTimer(state);
     for (const job of removedJobs) {

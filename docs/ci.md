@@ -34,7 +34,7 @@ dispatch.
 | `build-artifacts`                  | Build `dist/`, Control UI, built-CLI smoke checks, startup memory, and embedded built-artifact checks                                                                                                                 | Node-relevant changes                          |
 | `control-ui-i18n`                  | Verify generated Control UI locale bundles, metadata, and translation memory; advisory on automatic runs, blocking on manual release CI                                                                               | Control UI i18n-relevant changes and manual CI |
 | `checks-fast-core`                 | Fast Linux correctness lanes: suppression-baseline max-lines ratchet, bundled + protocol, Bun launcher, and the CI-routing fast task                                                                                  | Node-relevant changes                          |
-| `qa-smoke-ci-profile`              | Two self-contained balanced parts of the bounded automatic QA Smoke representative set; full taxonomy coverage remains available through explicit QA profiles                                                         | Node-relevant changes                          |
+| `qa-smoke-ci-profile`              | Self-contained balanced parts of the automatic QA Smoke coverage set; full taxonomy coverage remains available through explicit QA profiles                                                                           | Node-relevant changes                          |
 | `checks-fast-contracts-plugins-*`  | Two weighted plugin contract shards                                                                                                                                                                                   | Node-relevant changes                          |
 | `checks-fast-contracts-channels-*` | Two weighted channel contract shards                                                                                                                                                                                  | Node-relevant changes                          |
 | `checks-node-*`                    | Changed-target Node tests on pull requests; full core shards on `main`, manual, release, and broad-fallback runs                                                                                                      | Node-relevant changes                          |
@@ -151,6 +151,8 @@ The `github_activity` lane forwards normalized metadata only: event type, action
 General activity is observation, not delivery-by-default. The ClawSweeper agent receives the Discord target in its prompt and should post to `#clawsweeper` only when the event is surprising, actionable, risky, or operationally useful. Routine opens, edits, bot churn, duplicate webhook noise, and normal review traffic should result in `NO_REPLY`.
 
 Treat GitHub titles, comments, bodies, review text, branch names, and commit messages as untrusted data throughout this path. They are input for summarization and triage, not instructions for the workflow or agent runtime.
+
+Barnacle treats bug-labeled issues as verification candidates rather than inactivity-close candidates. It may add the `stale` label, which dispatches one exact ClawSweeper review, but it cannot close that issue. ClawSweeper may then apply an evidence-backed resolution; a proven fix on current `main` closes as completed, while current or inconclusive bugs stay open. The stale workflow also audits recent close events and fails when a Barnacle identity closes a bug as `not_planned`.
 
 ## Manual dispatches
 
@@ -564,9 +566,9 @@ QA Lab has dedicated CI lanes outside the main smart-scoped workflow. Agentic pa
 
 - The `QA-Lab - All Lanes` workflow runs nightly on `main` and on manual dispatch; it fans out mock parity plus live Matrix, Telegram, Discord, WhatsApp, and Slack jobs. Live jobs use the `qa-live-shared` environment; Telegram, Discord, WhatsApp, and Slack use Convex leases, while Matrix provisions disposable local credentials.
 
-Release checks run Matrix and Telegram live transport lanes with the deterministic mock provider and mock-qualified models (`mock-openai/gpt-5.6-luna` and `mock-openai/gpt-5.6-luna-alt`) so the channel contract is isolated from live model latency and normal provider-plugin startup. The live transport gateway disables memory search because QA parity covers memory behavior separately; provider connectivity is covered by the separate live model, native provider, and Docker provider suites.
+Scheduled, manual, and release Matrix checks use the deterministic mock provider so the live transport contract is isolated from model latency and normal provider-plugin startup. Telegram release checks use the same deterministic model boundary. The live transport gateway disables memory search because QA parity covers memory behavior separately; provider connectivity is covered by the separate live model, native provider, and Docker provider suites.
 
-Scheduled and release Matrix gates use the shared QA Lab suite host and live adapter with the release scenarios. The CLI default and manual workflow input remain `all`; manual `all` dispatches fan out the `transport`, `media`, `e2ee-smoke`, `e2ee-deep`, and `e2ee-cli` profiles so the 93-scenario proof stays within per-job timeouts. Focused manual dispatches select `fast`, `release`, or `transport` in one job.
+Scheduled, manual, and release Matrix gates use the shared QA Lab suite host and live adapter. Default membership comes from flow scenarios that explicitly declare Matrix channel eligibility; the runner and workflow keep no curated profile or scenario-id list. CI distributes that catalog-derived selection across five deterministic balanced shards so membership is order-independent and each job stays within its timeout. Focused local runs repeat `--scenario <id>`.
 
 `OpenClaw Release Checks` also runs the release-critical QA Lab lanes before release approval; its QA parity gate runs the candidate and baseline packs as parallel lane jobs, then downloads both artifacts into a small report job for the final parity comparison.
 
@@ -666,6 +668,7 @@ Local changed-lane logic lives in `scripts/changed-lanes.mjs` and is executed by
 - core test-only changes run only core test typecheck plus core lint;
 - extension production changes run extension prod and extension test typecheck plus extension lint;
 - extension test-only changes run extension test typecheck plus extension lint;
+- bundled channel manifests, package metadata, config schemas, UI hints, and generator owners also run the bundled channel config metadata drift check;
 - public Plugin SDK or plugin-contract changes expand to extension typecheck because extensions depend on those core contracts (Vitest extension sweeps stay explicit test work);
 - release metadata-only version bumps run targeted version/config/root-dependency checks;
 - unknown root/config changes fail safe to all check lanes.

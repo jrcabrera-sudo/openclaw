@@ -133,6 +133,7 @@ const ALL_ROUTES: RouteId[] = Array.from(
     "worktrees",
     "memory-import",
     "model-setup",
+    "lobsterdex",
     ...SETTINGS_NAVIGATION_GROUPS.flatMap((group) => group.routes),
   ]),
 );
@@ -147,6 +148,7 @@ const SETTINGS_ROUTE_PATHS = [
     alias: "/communications",
   },
   { routeId: "appearance", path: "/settings/appearance", alias: "/appearance" },
+  { routeId: "lobsterdex", path: "/settings/lobsterdex", alias: "/lobsterdex" },
   { routeId: "automation", path: "/settings/automation", alias: "/automation" },
   { routeId: "mcp", path: "/settings/mcp", alias: "/mcp" },
   {
@@ -187,6 +189,7 @@ describe("navigationIconForRoute", () => {
       apps: "layoutGrid",
       approvals: "badgeCheck",
       workboard: "kanban",
+      dashboards: "layoutDashboard",
       worktrees: "folder",
       channels: "link",
       connection: "radio",
@@ -203,8 +206,10 @@ describe("navigationIconForRoute", () => {
       profile: "circleUser",
       communications: "send",
       appearance: "palette",
+      lobsterdex: "bug",
       automation: "terminal",
       mcp: "wrench",
+      memory: "book",
       infrastructure: "globe",
       labs: "flaskConical",
       about: "fileText",
@@ -295,9 +300,10 @@ describe("titleForRoute", () => {
       apps: "Apps",
       approvals: "Approvals",
       workboard: "Workboard",
+      dashboards: "Dashboards",
       worktrees: "Worktrees",
       channels: "Channels",
-      connection: "Connection",
+      connection: "Gateway",
       sessions: "Threads",
       usage: "Usage",
       cron: "Automations",
@@ -311,14 +317,16 @@ describe("titleForRoute", () => {
       profile: "Profile",
       communications: "Communications",
       appearance: "Appearance",
+      lobsterdex: "Lobsterdex",
       automation: "Automation",
       mcp: "MCP",
+      memory: "Memory",
       infrastructure: "Infrastructure",
       labs: "Labs",
       about: "About",
       "ai-agents": "Agent Defaults",
       "model-setup": "Model Setup",
-      "model-providers": "Model Providers",
+      "model-providers": "Models",
       "memory-import": "Import Memory",
       notifications: "Notifications",
       security: "Privacy & Security",
@@ -340,6 +348,7 @@ describe("subtitleForRoute", () => {
       apps: "Companion apps for phone, watch, desktop, and browser.",
       approvals: "Recent exec, plugin, and system-agent approvals.",
       workboard: "Agent work queue and thread handoff.",
+      dashboards: "Threads that open on their dashboard face.",
       worktrees: "Isolated agent task checkouts and recovery snapshots.",
       channels: "Channels and settings.",
       connection: "Gateway endpoint, credentials, and handshake status.",
@@ -352,18 +361,20 @@ describe("subtitleForRoute", () => {
       plugins: "Install and manage optional capabilities.",
       "skill-workshop": "Review, refine, and apply proposals before they become live skills.",
       nodes: "Paired devices, pairing approvals, and exec bindings.",
-      config: "Model defaults, language, and gateway host.",
+      config: "Language and shortcuts to core settings.",
       profile: "Your agent's stats, streaks, and life in the reef.",
-      communications: "Channels, messages, and audio settings.",
+      communications: "Messages, talk, and voice settings.",
       appearance: "Theme, UI, and setup wizard settings.",
+      lobsterdex: "Every lobster palette that has visited this browser.",
       automation: "Commands, hooks, cron, and plugins.",
       mcp: "MCP servers, auth, tools, and diagnostics.",
-      infrastructure: "Gateway, web, browser, and media settings.",
+      memory: "Memory engine, backend, search, and dreaming.",
+      infrastructure: "Gateway, browser, node host, discovery, and ACP settings.",
       labs: "Experimental agent and tool capabilities.",
       about: "Control UI and connected Gateway build identity.",
-      "ai-agents": "Global agent defaults: models, skills, tools, memory, session.",
+      "ai-agents": "Global agent defaults: skills, tools, and session.",
       "model-setup": "Connect a verified AI model",
-      "model-providers": "Configured providers with plan, quota, and cost.",
+      "model-providers": "Default models, behavior, provider access, usage, and cost.",
       "memory-import": "Bring Codex and Claude Code memory into an agent workspace.",
       notifications: "Browser push notifications from your gateway.",
       security: "Gateway auth, exec policy, tool profile, and approvals.",
@@ -378,6 +389,7 @@ describe("pathForRoute", () => {
   it("returns correct path without base", () => {
     expect(pathForRoute("chat")).toBe("/chat");
     expect(pathForRoute("apps")).toBe("/apps");
+    expect(pathForRoute("dashboards")).toBe("/dashboards");
     expect(pathForRoute("custodian")).toBe("/custodian");
     expect(pathForRoute("connection")).toBe("/settings/connection");
     expect(pathForRoute("debug")).toBe("/debug");
@@ -414,6 +426,7 @@ describe("routeIdFromPath", () => {
     expect(routeIdFromPath("/connection")).toBeNull();
     expect(routeIdFromPath("/activity")).toBe("activity");
     expect(routeIdFromPath("/apps")).toBe("apps");
+    expect(routeIdFromPath("/dashboards")).toBe("dashboards");
     expect(routeIdFromPath("/sessions")).toBe("sessions");
     expect(routeIdFromPath("/debug")).toBe("debug");
     expect(routeIdFromPath("/logs")).toBe("logs");
@@ -532,11 +545,14 @@ describe("routeIdFromPath", () => {
       agentId: "main",
       shortId: "12345678",
     });
+    // The slug is captured so it can settle a tie between ids sharing this prefix, but it
+    // never changes the parsed id: a wrong agent and a wrong slug both stay decorative.
     expect(sessionRefFromPath("/chat/wrong/wrong-slug-1234567890ab")).toEqual({
       namespace: "chat",
       kind: "short",
       agentId: "wrong",
       shortId: "1234567890ab",
+      slugHint: "wrong-slug",
     });
     expect(sessionRefFromPath("/chat/main/telegram/12345")).toEqual({
       namespace: "chat",
@@ -691,6 +707,23 @@ describe("inferBasePathFromPathname", () => {
     expect(inferBasePathFromPathname("/index.html")).toBe("");
     expect(inferBasePathFromPathname("/ui/index.html")).toBe("/ui");
   });
+
+  it("never infers a route namespace as a mount base", () => {
+    // "/settings/config" is not a route; matching the "/config" alias must not
+    // rescope the page to base "/settings" or reconnect state and assets break.
+    expect(inferBasePathFromPathname("/settings/config")).toBe("");
+    expect(inferBasePathFromPathname("/settings/config/")).toBe("");
+    expect(inferBasePathFromPathname("/settings/chat/main")).toBe("");
+    // A leaf route is equally not a mount directory.
+    expect(inferBasePathFromPathname("/custodian/config")).toBe("");
+    // Nested unknown segments below a route namespace stay root-mounted too.
+    expect(inferBasePathFromPathname("/settings/other/config")).toBe("");
+    expect(inferBasePathFromPathname("/settings/")).toBe("");
+    expect(inferBasePathFromPathname("/skills/")).toBe("");
+    // Real mount directories that merely contain a route-suffix keep working.
+    expect(inferBasePathFromPathname("/ui/config")).toBe("/ui");
+    expect(inferBasePathFromPathname("/ui/settings/general")).toBe("/ui");
+  });
 });
 
 describe("plugin tabs route", () => {
@@ -749,6 +782,7 @@ describe("SIDEBAR_NAV_ROUTES", () => {
       "labs",
       "model-providers",
       "mcp",
+      "memory",
       "automation",
       "security",
       "approvals",

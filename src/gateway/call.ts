@@ -653,8 +653,7 @@ type ResolvedGatewayCallContext = {
   remoteUrl?: string;
   explicitAuth: ExplicitGatewayAuth;
   modeOverride?: GatewayCredentialMode;
-  localTokenPrecedence?: GatewayCredentialPrecedence;
-  localPasswordPrecedence?: GatewayCredentialPrecedence;
+  localPrecedence?: GatewayCredentialPrecedence;
   remoteTokenPrecedence?: GatewayRemoteCredentialPrecedence;
   remotePasswordPrecedence?: GatewayRemoteCredentialPrecedence;
   remoteTokenFallback?: GatewayRemoteCredentialFallback;
@@ -760,8 +759,7 @@ async function resolveGatewayCredentialsWithEnv(
     urlOverrideSource: context.urlOverrideSource,
     env,
     modeOverride: context.modeOverride,
-    localTokenPrecedence: context.localTokenPrecedence,
-    localPasswordPrecedence: context.localPasswordPrecedence,
+    localPrecedence: context.localPrecedence,
     remoteTokenPrecedence: context.remoteTokenPrecedence,
     remotePasswordPrecedence: context.remotePasswordPrecedence,
     remoteTokenFallback: context.remoteTokenFallback,
@@ -884,7 +882,7 @@ function ensureGatewaySupportsRequiredMethods(params: {
     throw new Error(
       [
         `active gateway does not support required method "${method}" for "${params.attemptedMethod}".`,
-        "Update the gateway or run without SecretRefs.",
+        "Update or restart the active gateway and try again.",
       ].join(" "),
     );
   }

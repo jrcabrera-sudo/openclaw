@@ -826,6 +826,31 @@ describe("sendMessageTelegram", () => {
     });
   });
 
+  it.each([
+    ["65 emoji", "😀".repeat(65)],
+    ["128 emoji", "😀".repeat(128)],
+    ["128 mixed emoji and ASCII characters", "😀".repeat(64) + "a".repeat(64)],
+    ["128 CJK characters", "界".repeat(128)],
+  ])("accepts %s forum topic names by Unicode code points", async (_label, name) => {
+    loadConfig.mockReturnValue({
+      channels: {
+        telegram: {
+          botToken: "tok",
+        },
+      },
+    });
+    botApi.editForumTopic.mockResolvedValue(true);
+
+    await editForumTopicTelegram("-1001234567890", 271, {
+      cfg: TELEGRAM_TEST_CFG,
+      token: "tok",
+      accountId: "default",
+      name,
+    });
+
+    expect(botApi.editForumTopic).toHaveBeenCalledWith("-1001234567890", 271, { name });
+  });
+
   it("strips topic suffixes before editing a Telegram forum topic", async () => {
     loadConfig.mockReturnValue({
       channels: {
@@ -2962,6 +2987,86 @@ describe("sendMessageTelegram", () => {
   });
 
   it.each([
+    { contentType: "image/png", filename: "image.png", method: "sendPhoto" },
+    { contentType: "video/quicktime", filename: "video.mov", method: "sendVideo" },
+    { contentType: "audio/mpeg", filename: "audio.mp3", method: "sendAudio" },
+    { contentType: "application/pdf", filename: "file.pdf", method: "sendDocument" },
+    { contentType: "image/gif", filename: "animation.gif", method: "sendAnimation" },
+    { contentType: "application/x-custom", filename: "file.bin", method: "sendDocument" },
+  ])("preserves MIME-derived filenames for durable $contentType", async (testCase) => {
+    const sendMedia = vi.fn().mockResolvedValue({
+      message_id: 10,
+      chat: { id: "123" },
+    });
+    const api = { [testCase.method]: sendMedia } as TelegramApiOverride;
+    mockLoadedMedia({ contentType: testCase.contentType });
+
+    await sendMessageTelegram("123", "caption", {
+      cfg: TELEGRAM_TEST_CFG,
+      token: "tok",
+      api,
+      mediaUrl: "https://example.com/media",
+    });
+
+    expect(firstMockCall(sendMedia, testCase.method)[1]).toMatchObject({
+      filename: testCase.filename,
+    });
+  });
+
+  it.each(["PHOTO_INVALID_DIMENSIONS", "PHOTO_TOO_BIG"])(
+    "falls back to a document when Telegram rejects a durable photo with %s",
+    async (reason) => {
+      const sendPhoto = vi.fn().mockRejectedValueOnce(new Error(`400: Bad Request: ${reason}`));
+      const sendDocument = vi.fn().mockResolvedValue({
+        message_id: 10,
+        chat: { id: "123" },
+      });
+      mockLoadedMedia({ contentType: "image/png", fileName: "photo.png" });
+
+      const result = await sendMessageTelegram("123", "caption", {
+        cfg: TELEGRAM_TEST_CFG,
+        token: "tok",
+        api: { sendPhoto, sendDocument },
+        mediaUrl: "https://example.com/photo.png",
+        messageThreadId: 42,
+        replyToMessageId: 512,
+      });
+
+      expect(sendPhoto).toHaveBeenCalledOnce();
+      expectMediaSendCall(
+        firstMockCall(sendDocument, "fallback document"),
+        "fallback document",
+        "123",
+        {
+          caption: "caption",
+          parse_mode: "HTML",
+          message_thread_id: 42,
+          reply_to_message_id: 512,
+          allow_sending_without_reply: true,
+        },
+      );
+      expect(result.messageId).toBe("10");
+    },
+  );
+
+  it("does not retry unrelated durable photo failures as documents", async () => {
+    const sendPhoto = vi.fn().mockRejectedValueOnce(new Error("400: Bad Request: chat migrated"));
+    const sendDocument = vi.fn();
+    mockLoadedMedia({ contentType: "image/png", fileName: "photo.png" });
+
+    await expect(
+      sendMessageTelegram("123", "caption", {
+        cfg: TELEGRAM_TEST_CFG,
+        token: "tok",
+        api: { sendPhoto, sendDocument },
+        mediaUrl: "https://example.com/photo.png",
+      }),
+    ).rejects.toThrow("chat migrated");
+
+    expect(sendDocument).not.toHaveBeenCalled();
+  });
+
+  it.each([
     {
       name: "images",
       buffer: Buffer.from("fake-image"),
@@ -5026,6 +5131,24 @@ describe("createForumTopicTelegram", () => {
     });
   }
 
+  it.each([
+    ["65 emoji", "🎃".repeat(65)],
+    ["128 emoji", "🎃".repeat(128)],
+    ["128 mixed emoji and ASCII characters", "🎃".repeat(64) + "a".repeat(64)],
+    ["128 CJK characters", "界".repeat(128)],
+  ])("accepts %s forum topic names by Unicode code points", async (_label, name) => {
+    const createForumTopic = vi.fn().mockResolvedValue({ message_thread_id: 400, name });
+    const api = { createForumTopic } as unknown as Bot["api"];
+
+    await createForumTopicTelegram("-1001234567890", name, {
+      cfg: TELEGRAM_TEST_CFG,
+      token: "tok",
+      api,
+    });
+
+    expect(createForumTopic).toHaveBeenCalledWith("-1001234567890", name, undefined);
+  });
+
   it("rejects an invalid topic name before creating a Telegram client", async () => {
     botCtorSpy.mockClear();
 
@@ -5036,6 +5159,35 @@ describe("createForumTopicTelegram", () => {
       }),
     ).rejects.toThrow("Forum topic name is required");
     expect(botCtorSpy).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["129 ASCII characters", "a".repeat(129)],
+    ["129 emoji", "🎃".repeat(129)],
+    ["19 multi-code-point emoji graphemes", "👨‍👩‍👧‍👦".repeat(19)],
+  ])("rejects %s exceeding 128 Unicode code points on create and edit", async (_label, name) => {
+    const createForumTopic = vi.fn();
+    const editForumTopic = vi.fn();
+    const api = { createForumTopic, editForumTopic } as unknown as Bot["api"];
+
+    await expect(
+      createForumTopicTelegram("-1001234567890", name, {
+        cfg: TELEGRAM_TEST_CFG,
+        token: "tok",
+        api,
+      }),
+    ).rejects.toThrow("128 characters or fewer");
+    await expect(
+      editForumTopicTelegram("-1001234567890", 271, {
+        cfg: TELEGRAM_TEST_CFG,
+        token: "tok",
+        api,
+        name,
+      }),
+    ).rejects.toThrow("128 characters or fewer");
+
+    expect(createForumTopic).not.toHaveBeenCalled();
+    expect(editForumTopic).not.toHaveBeenCalled();
   });
 });
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

@@ -402,7 +402,6 @@ struct MacNodeModeCoordinatorTests {
                 "nodeId": "test-node",
                 "command": "computer.act",
                 "paramsJSON": "{}",
-                "sessionKey": NSNull(),
                 "timeoutMs": 0,
             ],
         ])
@@ -911,6 +910,29 @@ struct MacNodeModeCoordinatorTests {
         let disabledCommands = MacNodeModeCoordinator.resolvedCommands(caps: disabledCaps)
         #expect(!disabledCaps.contains(OpenClawCapability.computer.rawValue))
         #expect(!disabledCommands.contains(OpenClawComputerCommand.act.rawValue))
+    }
+
+    @Test func `camera cap gates capture and PTZ commands`() {
+        let enabledCaps = MacNodeModeCoordinator.resolvedCaps(
+            browserControlEnabled: false,
+            cameraEnabled: true,
+            computerControlEnabled: false,
+            locationMode: .off,
+            connectionMode: .local)
+        let enabledCommands = MacNodeModeCoordinator.resolvedCommands(caps: enabledCaps)
+        #expect(enabledCommands.contains(OpenClawCameraCommand.list.rawValue))
+        #expect(enabledCommands.contains(OpenClawCameraCommand.ptzStatus.rawValue))
+        #expect(enabledCommands.contains(OpenClawCameraCommand.ptzControl.rawValue))
+
+        let disabledCaps = MacNodeModeCoordinator.resolvedCaps(
+            browserControlEnabled: false,
+            cameraEnabled: false,
+            computerControlEnabled: false,
+            locationMode: .off,
+            connectionMode: .local)
+        let disabledCommands = MacNodeModeCoordinator.resolvedCommands(caps: disabledCaps)
+        #expect(!disabledCommands.contains(OpenClawCameraCommand.ptzStatus.rawValue))
+        #expect(!disabledCommands.contains(OpenClawCameraCommand.ptzControl.rawValue))
     }
 
     @Test func `tls pin store key uses default wss port`() throws {

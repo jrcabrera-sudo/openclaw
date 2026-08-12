@@ -28,9 +28,10 @@ type GatewayRequestContextParams = {
   deps: GatewayRequestContext["deps"];
   runtimeState: Pick<
     GatewayServerLiveState,
-    "cronState" | "configReloader" | "controlUiSessionPullRequests" | "sessionViewerPresence"
+    "cronState" | "controlUiSessionPullRequests" | "sessionViewerPresence"
   >;
   getRuntimeConfig: GatewayRequestContext["getRuntimeConfig"];
+  gatewayTlsFingerprint?: GatewayRequestContext["gatewayTlsFingerprint"];
   sessionCompanion: SessionCompanionService;
   sessionObserver: SessionObserverService;
   getMcpAppSandboxPort?: GatewayRequestContext["getMcpAppSandboxPort"];
@@ -79,8 +80,10 @@ type GatewayRequestContextParams = {
   }) => void;
   nodeRegistry: GatewayRequestContext["nodeRegistry"];
   workerEnvironmentService?: GatewayRequestContext["workerEnvironmentService"];
+  hostDesktopService?: GatewayRequestContext["hostDesktopService"];
   workerSessionPlacementService?: GatewayRequestContext["workerSessionPlacementService"];
   workerPlacementDispatchService?: GatewayRequestContext["workerPlacementDispatchService"];
+  validateAgentRuntimeApprovalAuthority: GatewayRequestContext["validateAgentRuntimeApprovalAuthority"];
   terminalSessions?: GatewayRequestContext["terminalSessions"];
   agentRunSeq: GatewayRequestContext["agentRunSeq"];
   chatAbortControllers: GatewayRequestContext["chatAbortControllers"];
@@ -109,6 +112,8 @@ type GatewayRequestContextParams = {
   channelWizardRunner: GatewayRequestContext["channelWizardRunner"];
   broadcastVoiceWakeChanged: GatewayRequestContext["broadcastVoiceWakeChanged"];
   broadcastVoiceWakeRoutingChanged: GatewayRequestContext["broadcastVoiceWakeRoutingChanged"];
+  notifyPluginMetadataChanged: GatewayRequestContext["notifyPluginMetadataChanged"];
+  getConfigReloaderHotReloadStatus: GatewayRequestContext["getConfigReloaderHotReloadStatus"];
   unavailableGatewayMethods: ReadonlySet<string>;
 };
 
@@ -170,12 +175,12 @@ export function createGatewayRequestContext(
       return params.runtimeState.cronState.storePath;
     },
     getRuntimeConfig: params.getRuntimeConfig,
+    gatewayTlsFingerprint: params.gatewayTlsFingerprint,
     controlUiSessionPullRequests: params.runtimeState.controlUiSessionPullRequests,
     sessionViewerPresence: params.runtimeState.sessionViewerPresence,
     sessionCompanion: params.sessionCompanion,
     sessionObserver: params.sessionObserver,
-    notifyPluginMetadataChanged: () =>
-      params.runtimeState.configReloader.notifyPluginMetadataChanged(),
+    notifyPluginMetadataChanged: params.notifyPluginMetadataChanged,
     getMcpAppSandboxPort: params.getMcpAppSandboxPort,
     ensureSandboxHostPort: params.ensureSandboxHostPort,
     resolveTerminalLaunchPolicy: params.resolveTerminalLaunchPolicy,
@@ -363,9 +368,11 @@ export function createGatewayRequestContext(
     ...(params.workerEnvironmentService
       ? { workerEnvironmentService: params.workerEnvironmentService }
       : {}),
+    ...(params.hostDesktopService ? { hostDesktopService: params.hostDesktopService } : {}),
     ...(params.workerSessionPlacementService
       ? { workerSessionPlacementService: params.workerSessionPlacementService }
       : {}),
+    validateAgentRuntimeApprovalAuthority: params.validateAgentRuntimeApprovalAuthority,
     ...(params.workerPlacementDispatchService
       ? { workerPlacementDispatchService: params.workerPlacementDispatchService }
       : {}),
@@ -395,7 +402,7 @@ export function createGatewayRequestContext(
     purgeWizardSession: params.purgeWizardSession,
     getRuntimeSnapshot: params.getRuntimeSnapshot,
     getEventLoopHealth: params.getEventLoopHealth,
-    getConfigReloaderHotReloadStatus: () => params.runtimeState.configReloader.hotReloadStatus?.(),
+    getConfigReloaderHotReloadStatus: params.getConfigReloaderHotReloadStatus,
     startChannel: params.startChannel,
     stopChannel: params.stopChannel,
     markChannelLoggedOut: params.markChannelLoggedOut,

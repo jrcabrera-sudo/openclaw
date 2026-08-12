@@ -316,7 +316,7 @@ Docker notes:
 - Test: `src/gateway/gateway-codex-harness.live.test.ts`
 - Enable: `OPENCLAW_LIVE_CODEX_HARNESS=1`
 - Harness baseline model: `openai/gpt-5.6-luna`
-- Fresh OpenAI API-key selection default: `openai/gpt-5.6`
+- Fresh OpenAI API-key selection default: `openai/gpt-5.6-sol`
 - Default thinking: `low`
 - Model override: `OPENCLAW_LIVE_CODEX_HARNESS_MODEL=openai/<model>`
 - Thinking override: `OPENCLAW_LIVE_CODEX_HARNESS_THINKING=<level>`
@@ -416,7 +416,7 @@ OPENCLAW_LIVE_CODEX_HARNESS=1 \
   OPENCLAW_LIVE_CODEX_HARNESS_COMPACTION_STRESS_TURNS=8 \
   OPENCLAW_LIVE_CODEX_HARNESS_LARGE_OUTPUT_BYTES=800000 \
   OPENCLAW_LIVE_CODEX_HARNESS_DEBUG=1 \
-  node scripts/test-live.mjs --quiet src/gateway/gateway-codex-harness.live.test.ts
+  node --import tsx scripts/test-live.mts --quiet src/gateway/gateway-codex-harness.live.test.ts
 ```
 
 GPT-5.6 native Codex matrix:
@@ -456,7 +456,7 @@ OPENCLAW_LIVE_OPENAI_LONG_CONTEXT=1 \
   OPENCLAW_LIVE_OPENAI_LONG_CONTEXT_PROFILE=full \
   OPENCLAW_LIVE_OPENAI_LONG_CONTEXT_METRICS=1 \
   OPENCLAW_LIVE_OPENAI_LONG_CONTEXT_OUTPUT=1 \
-  node scripts/test-live.mjs --quiet src/gateway/gateway-openai-long-context.live.test.ts
+  node --import tsx scripts/test-live.mts --quiet src/gateway/gateway-openai-long-context.live.test.ts
 ```
 
 Reduced-budget recipe:
@@ -466,7 +466,7 @@ OPENCLAW_LIVE_OPENAI_LONG_CONTEXT=1 \
   OPENCLAW_LIVE_OPENAI_LONG_CONTEXT_PROFILE=reduced \
   OPENCLAW_LIVE_OPENAI_LONG_CONTEXT_METRICS=1 \
   OPENCLAW_LIVE_OPENAI_LONG_CONTEXT_OUTPUT=1 \
-  node scripts/test-live.mjs --quiet src/gateway/gateway-openai-long-context.live.test.ts
+  node --import tsx scripts/test-live.mts --quiet src/gateway/gateway-openai-long-context.live.test.ts
 ```
 
 ### Long-context hard oracles
@@ -509,7 +509,7 @@ OPENCLAW_LIVE_GATEWAY_OPENAI_API_DEFAULT=1 \
 ```
 
 This proof leaves `OPENCLAW_LIVE_GATEWAY_MODELS` unset, resolves the model through
-the fresh onboarding inference-selection seam, asserts `openai/gpt-5.6`, and then
+the fresh onboarding inference-selection seam, asserts `openai/gpt-5.6-sol`, and then
 runs a real gateway turn with that resolved model.
 
 GPT-5.6 embedded OpenClaw matrix:

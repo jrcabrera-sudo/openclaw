@@ -1,6 +1,7 @@
 // Defines user-facing config field help text for docs and UI surfaces.
 import { describeTalkSilenceTimeoutDefaults } from "./talk-defaults.js";
 import { CLOUD_WORKER_FIELD_HELP } from "./zod-schema.cloud-workers.js";
+import { DESKTOP_FIELD_HELP } from "./zod-schema.desktop.js";
 
 export const CORE_FIELD_HELP: Record<string, string> = {
   "channels.discord.activities":
@@ -75,6 +76,7 @@ export const CORE_FIELD_HELP: Record<string, string> = {
   cloudWorkers:
     "Opt-in cloud worker profiles for disposable remote environments. When this section is omitted or has no profiles, cloud worker creation remains unavailable and existing gateway/node status behavior is unchanged.",
   ...CLOUD_WORKER_FIELD_HELP,
+  ...DESKTOP_FIELD_HELP,
   gateway:
     "Gateway runtime surface for bind mode, auth, control UI, remote transport, and operational safety controls. Keep conservative defaults unless you intentionally expose the gateway beyond trusted local interfaces.",
   "gateway.port":
@@ -107,6 +109,8 @@ export const CORE_FIELD_HELP: Record<string, string> = {
     'Gateway auth mode: "none", "token", "password", or "trusted-proxy" depending on your edge architecture. Use token/password for direct exposure, and trusted-proxy only behind hardened identity-aware proxies.',
   "gateway.auth.allowTailscale":
     "Allows trusted Tailscale identity paths to satisfy gateway auth checks when configured. Use this only when your tailnet identity posture is strong and operator workflows depend on it.",
+  "gateway.auth.identityScopes":
+    "Maps verified trusted-proxy or Tailscale identities to connection-only operator scope grants. Email keys match case-insensitively; grants augment device scopes before the connection scope cap is applied.",
   "gateway.auth.rateLimit":
     "Login/auth attempt throttling controls to reduce credential brute-force risk at the gateway boundary. Keep enabled in exposed environments and tune thresholds to your traffic baseline.",
   "gateway.auth.trustedProxy":

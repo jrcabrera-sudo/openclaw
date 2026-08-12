@@ -1,9 +1,9 @@
 // Covers core TUI state transitions and backend event rendering.
 import { EventEmitter } from "node:events";
 import path from "node:path";
+import { MAX_TIMER_TIMEOUT_MS } from "@openclaw/normalization-core/number-coercion";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/config.js";
-import { MAX_TIMER_TIMEOUT_MS } from "../infra/parse-finite-number.js";
 import { MALFORMED_STREAMING_FRAGMENT_ERROR_MESSAGE } from "../shared/assistant-error-format.js";
 import { withEnv } from "../test-utils/env.js";
 import { getSlashCommands, parseCommand } from "./commands.js";
@@ -328,9 +328,22 @@ describe("resolveInitialTuiAgentId", () => {
         cfg,
         fallbackAgentId: "main",
         initialSessionInput: "agent:main:incident",
+        agentId: "ops",
         cwd: "/tmp/openclaw/projects/ops/src",
       }),
     ).toBe("main");
+  });
+
+  it("keeps an explicit global-session agent ahead of workspace inference", () => {
+    expect(
+      resolveInitialTuiAgentId({
+        cfg,
+        fallbackAgentId: "main",
+        initialSessionInput: "global",
+        agentId: "ops",
+        cwd: "/tmp/openclaw",
+      }),
+    ).toBe("ops");
   });
 
   it("falls back when cwd has no matching workspace", () => {

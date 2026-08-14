@@ -54,6 +54,7 @@ import {
 import {
   setupGatewaySessionsTestHarness,
   createCheckpointFixture,
+  getGatewayConfigModule,
   sessionStoreEntry,
   directSessionReq,
   sessionHookMocks,
@@ -414,7 +415,7 @@ test("sessions.create keeps incognito rows process-local through list, spawn, re
       ok: false,
       error: {
         code: "INVALID_REQUEST",
-        message: "sessions.create key agent (work) does not match agentId (main)",
+        message: 'agent "main" does not match session key agent "work"',
       },
     });
     const durableCollisionKey = "agent:main:dashboard:incognito-durable-collision";
@@ -467,7 +468,7 @@ test("incognito webchat rejects a vanished non-default-agent session before disp
       agentId: "work",
       incognito: true,
     });
-    expect(created.ok).toBe(true);
+    expect(created.ok, JSON.stringify(created)).toBe(true);
     const sessionKey = requireNonEmptyString(created.payload?.key, "incognito webchat key");
     const sessionId = requireNonEmptyString(created.payload?.sessionId, "incognito webchat id");
 
@@ -595,12 +596,24 @@ test("createGatewaySession persists a generated title only for a new session", a
   expect(reused).toMatchObject({ ok: true, entry: { displayName: "Readable Worktree Names" } });
 });
 
-test("chat.send generates a dashboard title only after the user turn finishes", async () => {
-  await createSessionStoreDir();
+test("chat.send fences dashboard title persistence from concurrent session deletion", async () => {
+  const { storePath } = await createSessionStoreDir();
   const { ws } = await openClient();
   let finishDispatch: (() => void) | undefined;
   const dispatchFinished = new Promise<void>((resolve) => {
     finishDispatch = resolve;
+  });
+  let finishTitle: (() => void) | undefined;
+  let markTitleStarted = () => {};
+  const titleStarted = new Promise<void>((resolve) => {
+    markTitleStarted = resolve;
+  });
+  dashboardTitleGenerationMocks.generate.mockImplementationOnce(async () => {
+    markTitleStarted();
+    await new Promise<void>((resolve) => {
+      finishTitle = resolve;
+    });
+    return "Generated Dashboard Title";
   });
   dispatchInboundMessageMock.mockImplementationOnce(async () => {
     await dispatchFinished;
@@ -636,8 +649,27 @@ test("chat.send generates a dashboard title only after the user turn finishes", 
         sessionKey,
       }),
     );
+    await titleStarted;
+
+    let deletionSettled = false;
+    const deletion = directSessionReq<{ deleted: boolean }>("sessions.delete", {
+      key: sessionKey,
+    }).finally(() => {
+      deletionSettled = true;
+    });
+    await waitForFast(
+      () => expect(isSessionLifecycleMutationActive(storePath, [sessionKey])).toBe(true),
+      { timeout: 5_000 },
+    );
+    expect(deletionSettled).toBe(false);
+
+    finishTitle?.();
+    const deleted = await deletion;
+    expect(deleted.ok, JSON.stringify(deleted.error)).toBe(true);
+    expect(deleted.payload?.deleted).toBe(true);
   } finally {
     finishDispatch?.();
+    finishTitle?.();
     ws.close();
   }
 });
@@ -3204,6 +3236,58 @@ test("sessions.create preserves global and unknown sentinel keys", async () => {
   ).toBeUndefined();
 });
 
+test("sessions.create applies configured fixed-store ownership to bare keys", async () => {
+  const { storePath } = await createSessionStoreDir();
+  const broadcastToConnIds = vi.fn();
+  testState.agentsConfig = {
+    ownership: "explicit",
+    entries: { ops: {}, research: {} },
+  };
+  testState.agentConfig = { sessionStore: { agentId: "ops" } };
+  const { clearConfigCache, clearRuntimeConfigSnapshot } = await getGatewayConfigModule();
+  clearRuntimeConfigSnapshot();
+  clearConfigCache();
+  try {
+    const created = await directSessionReq<{ key?: string; sessionId?: string }>(
+      "sessions.create",
+      { key: "global" },
+      {
+        context: {
+          broadcastToConnIds,
+          getSessionEventSubscriberConnIds: () => new Set(["conn-1"]),
+        },
+      },
+    );
+
+    expect(created.ok, JSON.stringify(created)).toBe(true);
+    expect(created.payload?.key).toBe("global");
+    expect(loadSessionEntry({ agentId: "ops", sessionKey: "global", storePath })?.sessionId).toBe(
+      created.payload?.sessionId,
+    );
+    expect(broadcastToConnIds).toHaveBeenCalledWith(
+      "sessions.changed",
+      expect.objectContaining({ sessionKey: "global", agentId: "ops", reason: "create" }),
+      new Set(["conn-1"]),
+      { dropIfSlow: true, agentId: "ops", sessionKeys: ["global"] },
+    );
+
+    const conflict = await directSessionReq("sessions.create", {
+      key: "global",
+      agentId: "research",
+    });
+    expect(conflict).toMatchObject({
+      ok: false,
+      error: {
+        code: "INVALID_REQUEST",
+        message: 'agent "research" does not match session key agent "ops"',
+      },
+    });
+  } finally {
+    testState.agentsConfig = undefined;
+    testState.agentConfig = {};
+  }
+});
+
 test("sessions.create stores selected global sessions in the requested agent store", async () => {
   const { mainStorePath, workStorePath } = await createSelectedGlobalSessionStore();
   const broadcastToConnIds = vi.fn();
@@ -3322,7 +3406,7 @@ test("sessions.create loads selected global parent from the requested agent stor
 });
 
 test("sessions.get reads selected global messages from the requested agent store", async () => {
-  const { mainStorePath, workStorePath } = await createSelectedGlobalSessionStore();
+  const { mainStorePath, storeTemplate, workStorePath } = await createSelectedGlobalSessionStore();
   try {
     await writeSessionStore({
       storePath: mainStorePath,
@@ -3352,12 +3436,23 @@ test("sessions.get reads selected global messages from the requested agent store
       storePath: workStorePath,
     });
 
-    const result = await directSessionReq<{ messages?: unknown[] }>("sessions.get", {
-      key: "global",
-      agentId: "work",
-    });
+    const result = await directSessionReq<{ messages?: unknown[] }>(
+      "sessions.get",
+      {
+        key: "global",
+        agentId: "work",
+      },
+      {
+        context: {
+          getRuntimeConfig: () => ({
+            agents: { entries: { main: {}, work: {} } },
+            session: { scope: "global", store: storeTemplate },
+          }),
+        },
+      },
+    );
 
-    expect(result.ok).toBe(true);
+    expect(result.ok, JSON.stringify(result)).toBe(true);
     const renderedMessages = JSON.stringify(result.payload?.messages ?? []);
     expect(renderedMessages).toContain("work global");
     expect(renderedMessages).not.toContain("main global");

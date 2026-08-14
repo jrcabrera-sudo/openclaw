@@ -73,6 +73,7 @@ export type WorkerPlacementDispatchRequest = {
   sessionKey: string;
   agentId: string;
   profileId: string;
+  deviceId?: string;
   inheritedProfile?: {
     providerId: string;
     profileSnapshot: WorkerProfile;
@@ -93,7 +94,7 @@ export type WorkerPlacementDispatchContract = {
   ): Promise<Extract<WorkerSessionPlacementRecord, { state: "active" }>>;
   reclaim?(
     request: WorkerPlacementReclaimRequest,
-  ): Promise<Extract<WorkerSessionPlacementRecord, { state: "reclaimed" }>>;
+  ): Promise<Extract<WorkerSessionPlacementRecord, { state: "local" | "reclaimed" }>>;
   forceDestroyEnvironment?(
     environmentId: string,
     onCleanupError?: (error: unknown) => void,

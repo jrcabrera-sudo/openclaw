@@ -929,6 +929,10 @@ CREATE TABLE IF NOT EXISTS node_worker_launches (
   )
 ) STRICT;
 
+CREATE INDEX IF NOT EXISTS idx_node_worker_launches_terminal_completed
+  ON node_worker_launches(completed_at_ms, launch_id)
+  WHERE completed_at_ms IS NOT NULL;
+
 CREATE TABLE IF NOT EXISTS voicewake_triggers (
   config_key TEXT NOT NULL,
   position INTEGER NOT NULL,
@@ -1016,6 +1020,7 @@ CREATE TABLE IF NOT EXISTS installed_plugin_index (
   migration_version INTEGER NOT NULL,
   policy_hash TEXT NOT NULL,
   generated_at_ms INTEGER NOT NULL,
+  workspace_dir TEXT,
   refresh_reason TEXT,
   install_records_json TEXT NOT NULL,
   plugins_json TEXT NOT NULL,
@@ -1477,6 +1482,11 @@ CREATE TABLE IF NOT EXISTS cron_jobs (
   PRIMARY KEY (store_key, job_id)
 ) STRICT;
 
+CREATE TABLE IF NOT EXISTS cron_store_epochs (
+  store_key TEXT PRIMARY KEY,
+  store_epoch INTEGER NOT NULL DEFAULT 0
+) STRICT;
+
 CREATE INDEX IF NOT EXISTS idx_cron_jobs_store_updated
   ON cron_jobs(store_key, sort_order ASC, updated_at DESC, job_id);
 
@@ -1490,6 +1500,36 @@ CREATE INDEX IF NOT EXISTS idx_cron_jobs_enabled_next_run
 CREATE INDEX IF NOT EXISTS idx_cron_jobs_agent_session
   ON cron_jobs(agent_id, session_key, updated_at DESC, job_id)
   WHERE agent_id IS NOT NULL OR session_key IS NOT NULL;
+
+-- One owner-native receipt is also the durable execution fence. Receipts
+-- survive job deletion so operators can distinguish a run from log inference.
+CREATE TABLE IF NOT EXISTS cron_run_receipts (
+  receipt_id TEXT PRIMARY KEY,
+  store_key TEXT NOT NULL,
+  job_id TEXT NOT NULL,
+  config_revision TEXT NOT NULL,
+  agent_id TEXT NOT NULL,
+  request_run_id TEXT,
+  status TEXT NOT NULL,
+  owner_pid INTEGER NOT NULL,
+  owner_start_time INTEGER,
+  started_at_ms INTEGER NOT NULL,
+  finished_at_ms INTEGER,
+  error_text TEXT,
+  CHECK (status IN ('running', 'ok', 'error', 'skipped', 'interrupted', 'superseded')),
+  CHECK (
+    (status = 'running' AND finished_at_ms IS NULL)
+    OR
+    (status != 'running' AND finished_at_ms IS NOT NULL)
+  )
+) STRICT;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_cron_run_receipts_active_job
+  ON cron_run_receipts(store_key, job_id)
+  WHERE status = 'running';
+
+CREATE INDEX IF NOT EXISTS idx_cron_run_receipts_job_history
+  ON cron_run_receipts(store_key, job_id, started_at_ms DESC, receipt_id DESC);
 
 -- Runtime-private authority is independent of job_json so downgraded writers
 -- can rewrite recognized job config without erasing or silently widening it.
@@ -1988,6 +2028,7 @@ CREATE TABLE IF NOT EXISTS worker_environments (
   bootstrap_bundle_hash TEXT,
   bootstrap_openclaw_version TEXT,
   bootstrap_protocol_features_json TEXT,
+  bootstrap_install_kind TEXT,
   owner_epoch INTEGER NOT NULL DEFAULT 0 CHECK (owner_epoch >= 0),
   teardown_terminal_state TEXT CHECK (teardown_terminal_state IN ('destroyed', 'failed')),
   attached_session_ids_json TEXT NOT NULL DEFAULT '[]',
@@ -2003,6 +2044,9 @@ CREATE TABLE IF NOT EXISTS worker_environments (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_worker_environments_provider_lease
   ON worker_environments(provider_id, lease_id)
   WHERE lease_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_worker_environments_terminal_changed
+  ON worker_environments(state_changed_at_ms, environment_id);
 
 -- Provider-advertised fallback ports preserve stable retry order separately
 -- from the downgrade-sensitive canonical worker environment row.
@@ -2406,6 +2450,7 @@ CREATE TABLE IF NOT EXISTS secret_store_entries (
   updated_at_ms INTEGER NOT NULL CHECK (updated_at_ms >= 0),
   updated_by TEXT,
   deleted_at_ms INTEGER,
+  allowed_hosts TEXT,
   CHECK ((scope_kind = 'team' AND scope_id = '') OR (scope_kind = 'identity' AND length(scope_id) > 0)),
   PRIMARY KEY (scope_kind, scope_id, name)
 ) STRICT;

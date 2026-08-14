@@ -109,13 +109,9 @@ export async function prepareGatewayKernelState(params: {
     registry: pluginBootstrap.pluginRegistry,
     baseGatewayMethods: pluginBootstrap.baseGatewayMethods,
   };
-  // Unconfigured clean installs get no service; durable rows still need list/status projection.
-  const hasConfiguredWorkerProfiles =
-    Object.keys(gatewayPluginConfigAtStart.cloudWorkers?.profiles ?? {}).length > 0;
-  const shouldStartWorkerEnvironmentService =
-    hasConfiguredWorkerProfiles ||
-    Boolean(workerEnvironmentStartup?.records.length) ||
-    Boolean(workerEnvironmentStartup?.hasNonlocalPlacementRecords);
+  // The core device provider is configuration-free, so every full Gateway owns the
+  // worker service even when no plugin-backed cloud profile has been configured.
+  const shouldStartWorkerEnvironmentService = Boolean(workerEnvironmentStartup);
   const hostDesktopConfig = gatewayPluginConfigAtStart.desktop?.host;
   const hostDesktopEnabled = hostDesktopConfig?.enabled === true;
   const nodeCommandConfig = gatewayPluginConfigAtStart.gateway?.nodes?.commands;
@@ -166,7 +162,13 @@ export async function prepareGatewayKernelState(params: {
           });
         })
       : {};
-  const { workerEnvironmentService, workerLiveEvents } = workerEnvironmentRuntime;
+  const {
+    workerEnvironmentService,
+    workerLiveEvents,
+    bindDeviceNodeControl,
+    bindNodeWorkspaceBindingResolver,
+    handleNodeWorkspaceTransferRequest,
+  } = workerEnvironmentRuntime;
   // Assigned once approval managers exist; placement dispatch must not run before then.
   const workerDispatchAuthority = {
     revoke: (_params: { sessionId: string; sessionKeys: readonly string[] }): void => {
@@ -180,22 +182,20 @@ export async function prepareGatewayKernelState(params: {
           return placementModule.createGatewayWorkerPlacementRuntime({
             placements: workerEnvironmentStartup.placementStore,
             environments: workerEnvironmentService,
-            admitNewPlacements: hasConfiguredWorkerProfiles,
+            admitNewPlacements: true,
             revokeSessionAuthority: (request) => workerDispatchAuthority.revoke(request),
             warn: (message) => log.warn(message),
           });
         })
       : undefined;
   if (workerPlacementRuntime) {
+    bindNodeWorkspaceBindingResolver?.(workerPlacementRuntime.resolveNodeWorkspaceBinding);
     workerEnvironmentRuntime.bindWorkerSessionDispatch?.(
       workerPlacementRuntime.dispatchService.dispatch,
     );
   }
-  // Without configured profiles, existing placements still reconcile but new dispatches stay off.
   const workerPlacementControlAvailable = workerPlacementRuntime?.dispatchService;
-  const workerPlacementDispatchAvailable = hasConfiguredWorkerProfiles
-    ? workerPlacementControlAvailable
-    : undefined;
+  const workerPlacementDispatchAvailable = workerPlacementControlAvailable;
   const workerDesktopObserveAvailable =
     Boolean(workerEnvironmentService) && gatewayPluginConfigAtStart.cloudWorkers?.desktop === true;
   const desktopObserveAvailable =
@@ -456,6 +456,7 @@ export async function prepareGatewayKernelState(params: {
     getStartup,
     handleWatchNodeRequest: async (req: IncomingMessage, res: ServerResponse) =>
       (await watchNodeRequestHandler.current?.(req, res)) ?? false,
+    handleNodeWorkspaceTransferRequest,
     workerIngressEnabled: Boolean(workerEnvironmentService),
     desktopSessionRegistry,
     nodeDesktopStreamBroker,
@@ -482,9 +483,9 @@ export async function prepareGatewayKernelState(params: {
   return {
     ...bootstrap,
     pluginRuntime,
-    hasConfiguredWorkerProfiles,
     workerEnvironmentService,
     workerLiveEvents,
+    bindDeviceNodeControl,
     workerDispatchAuthority,
     workerPlacementRuntime,
     workerPlacementControlAvailable,
@@ -562,6 +563,7 @@ export async function prepareGatewayKernelState(params: {
     getWorkerIngressEndpoint: transportBridge.getWorkerIngressEndpoint,
     getMcpAppSandboxPort: transportBridge.getMcpAppSandboxPort,
     ensureSandboxHostPort: transportBridge.ensureSandboxHostPort,
+    getPortalService: transportBridge.getPortalService,
     workerGatewayEndpoint,
   };
 }

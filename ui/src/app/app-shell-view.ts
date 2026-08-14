@@ -25,7 +25,12 @@ import { findInlineApproval } from "./approval-presentation.ts";
 import type { ApplicationRuntime } from "./bootstrap.ts";
 import type { ApplicationContext, ApplicationNavigationOptions } from "./context.ts";
 import { resolveControlUiAuthToken } from "./control-ui-auth.ts";
-import { isOptionalElementDefined, type OptionalCustomElement } from "./lazy-custom-element.ts";
+import { readScopeUpgradeAvailability } from "./device-scope-upgrade.ts";
+import {
+  ensureOptionalElementForHost,
+  isOptionalElementDefined,
+  type OptionalCustomElement,
+} from "./lazy-custom-element.ts";
 import { isMobileNavLayout, shouldMergeChatChrome } from "./mobile-nav-layout.ts";
 import type { NativeHistoryState } from "./native-web-chrome.ts";
 import { isNativeWebChromeHost } from "./native-web-chrome.ts";
@@ -44,6 +49,48 @@ const EMPTY_SESSION_HAS_DRAFT = () => false;
 const PALETTE_SHORTCUT = /Mac|iP(hone|ad|od)/i.test(globalThis.navigator?.platform ?? "")
   ? "⌘K"
   : "Ctrl K";
+
+const SCOPE_UPGRADE_BANNER_ELEMENT = {
+  tagName: "openclaw-device-scope-upgrade-banner",
+  label: "device scope upgrade banner",
+  loadModule: () => import("./device-scope-upgrade.runtime.ts"),
+} satisfies OptionalCustomElement;
+
+function renderScopeUpgradeBanner(
+  host: ShellViewHost,
+  snapshot: ApplicationContext["gateway"]["snapshot"],
+) {
+  const state = readScopeUpgradeAvailability(snapshot);
+  if (state.phase === "hidden") {
+    return nothing;
+  }
+  if (state.phase === "guidance") {
+    return html`<openclaw-update-banner
+      .props=${{
+        statusBanner: {
+          tone: "warn",
+          text: t("connection.scopeUpgrade.guidance"),
+        },
+      }}
+    ></openclaw-update-banner>`;
+  }
+  void ensureOptionalElementForHost(host, SCOPE_UPGRADE_BANNER_ELEMENT).catch(() => undefined);
+  if (isOptionalElementDefined(SCOPE_UPGRADE_BANNER_ELEMENT)) {
+    return html`<openclaw-device-scope-upgrade-banner
+      .props=${{
+        snapshot,
+      }}
+    ></openclaw-device-scope-upgrade-banner>`;
+  }
+  return html`<openclaw-update-banner
+    .props=${{
+      statusBanner: {
+        tone: "warn",
+        text: t("connection.scopeUpgrade.guidance"),
+      },
+    }}
+  ></openclaw-update-banner>`;
+}
 
 export interface ShellViewHost {
   readonly context: ApplicationContext<RouteId> | undefined;
@@ -79,6 +126,7 @@ export interface ShellViewHost {
   openPalette(): void;
   refreshControlUi(): void;
   replaceChatWithCurrentSession(): boolean;
+  requestUpdate(): void;
   resizeNavigation(splitRatio: number): void;
   selectChatSession(sessionKey: string, agentId?: string | null): void;
   storedOutboxScopeHost(context: ApplicationContext<RouteId>): StoredOutboxScopeHost;
@@ -196,12 +244,18 @@ export function renderApplicationShell(host: ShellViewHost) {
     mobileNavLayout,
   });
   const shellWidth = Math.max(globalThis.innerWidth || 0, NAV_WIDTH_MAX);
-  // Mirror the sidebar brand action: the open new-session route target wins
-  // over persisted selection so the collapsed cluster "+" uses the same agent.
-  const selectedAgentId = normalizeAgentId(
-    host.newSessionRouteAgentId() ||
-      (context.agentSelection.state.selectedId ?? gatewaySnapshot.assistantAgentId),
-  );
+  // A route query is navigation input, not an owner record. Let it override the
+  // live selection only after the roster proves that agent exists.
+  const requestedRouteAgentId = host.newSessionRouteAgentId();
+  const routeAgentId = requestedRouteAgentId ? normalizeAgentId(requestedRouteAgentId) : null;
+  const routeAgentIsKnown =
+    routeAgentId !== null &&
+    context.agents.state.agentsList?.agents.some(
+      (agent) => normalizeAgentId(agent.id) === routeAgentId,
+    ) === true;
+  const selectedAgentId = routeAgentIsKnown
+    ? routeAgentId
+    : normalizeAgentId(context.agentSelection.state.selectedId ?? gatewaySnapshot.assistantAgentId);
   const newSessionAccess = readSessionMethodAccess(gatewaySnapshot, {
     method: "sessions.create",
     params: {},
@@ -456,6 +510,7 @@ export function renderApplicationShell(host: ShellViewHost) {
           : ""} ${activeRoute === "workboard" ? "content--workboard" : ""}"
         .tabIndex=${-1}
       >
+        ${renderScopeUpgradeBanner(host, gatewaySnapshot)}
         ${gatewaySnapshot.hello?.deviceAuthMigration?.pending === true
           ? // The migration banner is registered by a rare-flow dynamic import after first render.
             customElements.get("openclaw-device-auth-migration-banner")
@@ -502,11 +557,13 @@ export function renderApplicationShell(host: ShellViewHost) {
       <openclaw-terminal-panel
         .client=${gatewayConnected ? gatewaySnapshot.client : null}
         .available=${terminalAvailable}
+        .agentId=${selectedAgentId}
         .suppressed=${settingsTakeover}
         .themeMode=${resolveTerminalThemeMode()}
         .basePath=${context.basePath}
       ></openclaw-terminal-panel>
       <openclaw-browser-panel
+        data-chat-autotype-exempt
         .client=${gatewayConnected ? gatewaySnapshot.client : null}
         .available=${browserPanelAvailable}
         .suppressed=${settingsTakeover}
@@ -518,6 +575,7 @@ export function renderApplicationShell(host: ShellViewHost) {
         })}
       ></openclaw-browser-panel>
       <openclaw-desktop-panel
+        data-chat-autotype-exempt
         .client=${gatewayConnected ? gatewaySnapshot.client : null}
         .available=${desktopPanelAvailable}
         .suppressed=${settingsTakeover}

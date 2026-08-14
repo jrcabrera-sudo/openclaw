@@ -145,7 +145,7 @@ export async function startGatewayCoreRuntime(input: {
     coreGatewayMethodNames,
     pluginHostServices,
     baseMethods,
-    defaultWorkspaceDir,
+    pluginWorkspaceDir,
     ambientEnvTriggers,
     workerEnvironmentStartup,
     broadcastPluginEvent,
@@ -154,6 +154,19 @@ export async function startGatewayCoreRuntime(input: {
   } = runtime;
   if (desktopSessionRegistry) {
     kernel.addGatewayLifetimeSidecar({ stop: () => desktopSessionRegistry.stopAll() });
+  }
+  const secretEgressProxy =
+    cfgAtStart.secrets?.egressProxy?.enabled === true
+      ? await import("../secrets/egress-proxy/runtime.js").then((egressRuntime) =>
+          egressRuntime.startGatewaySecretEgressProxy(
+            cfgAtStart.secrets?.egressProxy?.bypassHosts
+              ? { bypassHosts: cfgAtStart.secrets.egressProxy.bypassHosts }
+              : {},
+          ),
+        )
+      : undefined;
+  if (secretEgressProxy) {
+    kernel.addGatewayLifetimeSidecar(secretEgressProxy);
   }
   let earlyRuntimePromise: ReturnType<
     Awaited<ReturnType<typeof loadGatewayStartupEarlyModule>>["startGatewayEarlyRuntime"]
@@ -339,6 +352,9 @@ export async function startGatewayCoreRuntime(input: {
             delegatedAuthority: authority,
           }),
         onApprovalLifecycle: approvalSessionEvents.publish,
+        onAgentRunAuthorityClosed: (authority) => {
+          secretEgressProxy?.revokeRun(authority.operationalRunInstance);
+        },
       }),
       coreGatewayHandlers: coreGatewayHandlersLocal,
     };
@@ -511,7 +527,7 @@ export async function startGatewayCoreRuntime(input: {
     });
     const nextPluginLookUpTable = loadPluginLookUpTable({
       config: nextPluginActivationConfig,
-      workspaceDir: defaultWorkspaceDir,
+      workspaceDir: pluginWorkspaceDir,
       env: params.env,
       activationSourceConfig: params.nextConfig,
       // Workers can be created after startup; reload planning needs the live durable set.
@@ -574,7 +590,7 @@ export async function startGatewayCoreRuntime(input: {
     );
     const loaded = prepareGatewayPluginLoad({
       cfg: params.nextConfig,
-      workspaceDir: defaultWorkspaceDir,
+      workspaceDir: pluginWorkspaceDir,
       log,
       coreGatewayMethodNames,
       hostServices: pluginHostServices,
@@ -586,12 +602,12 @@ export async function startGatewayCoreRuntime(input: {
       snapshot: nextPluginLookUpTable,
       config: params.nextConfig,
       env: params.env,
-      workspaceDir: defaultWorkspaceDir,
+      workspaceDir: pluginWorkspaceDir,
     });
     setCurrentPluginMetadataSnapshot(nextPluginMetadataSnapshot, {
       config: params.nextConfig,
       env: params.env,
-      workspaceDir: defaultWorkspaceDir,
+      workspaceDir: pluginWorkspaceDir,
     });
     replaceAttachedPluginRuntime(loaded);
     kernel.setPluginServices(null);
@@ -603,7 +619,7 @@ export async function startGatewayCoreRuntime(input: {
       await startPluginServices({
         registry: loaded.pluginRegistry,
         config: params.nextConfig,
-        workspaceDir: defaultWorkspaceDir,
+        workspaceDir: pluginWorkspaceDir,
         broadcastPluginEvent,
       }),
     );

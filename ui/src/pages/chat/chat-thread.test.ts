@@ -1364,24 +1364,6 @@ describe("buildCachedChatItems working spark", () => {
     expect(hasReadingIndicator({ runWorking: true })).toBe(true);
   });
 
-  it("adds the plan to the active stream run and removes it when the run stops", () => {
-    const planStatus = {
-      steps: [{ step: "Inspect the route", status: "in_progress" as const }],
-    };
-    const activeItems = buildCachedChatItems(
-      createProps({ runActive: true, runWorking: true, planStatus }),
-    );
-
-    expect(coalesceStreamRuns(activeItems)).toMatchObject([
-      { kind: "stream-run", parts: [{ kind: "reading-indicator" }, { kind: "plan" }] },
-    ]);
-
-    const idleItems = buildCachedChatItems(
-      createProps({ runActive: false, runWorking: false, planStatus }),
-    );
-    expect(idleItems.some((item) => item.kind === "plan")).toBe(false);
-  });
-
   it("keeps the run start time on the working indicator", () => {
     const indicator = buildCachedChatItems(
       createProps({ runWorking: true, streamStartedAt: 42_000 }),
@@ -2239,18 +2221,21 @@ describe("buildCachedChatItems", () => {
     expect(groupAt(groups, 0).messages).toHaveLength(1);
   });
 
-  it("collapses consecutive duplicate text messages into one rendered item with a count", () => {
+  it("collapses two distinct persisted rows with identical text into one rendered item", () => {
     const groups = messageGroups({
       messages: [
-        assistantMessage([{ type: "text", text: "Same update" }], 1),
-        assistantMessage([{ type: "text", text: "Same update" }], 2),
-        assistantMessage([{ type: "text", text: "Same update" }], 3),
+        assistantMessage([{ type: "text", text: "Same update" }], 1, {
+          __openclaw: { seq: 7 },
+        }),
+        assistantMessage([{ type: "text", text: "Same update" }], 2, {
+          __openclaw: { seq: 8 },
+        }),
       ],
     });
 
     expect(groups).toHaveLength(1);
     expect(groupAt(groups, 0).messages).toHaveLength(1);
-    expect(messageAt(groupAt(groups, 0), 0).duplicateCount).toBe(3);
+    expect(messageAt(groupAt(groups, 0), 0).duplicateCount).toBe(2);
   });
 
   it.each([

@@ -209,7 +209,7 @@ export function buildGatewaySessionRow(params: {
   storePath: string;
   store: Record<string, SessionEntry>;
   key: string;
-  entry?: SessionEntry;
+  entry?: InternalSessionEntry;
   modelCatalog?: SessionListModelCatalog | ModelCatalogEntry[];
   now?: number;
   includeDerivedTitles?: boolean;
@@ -598,6 +598,7 @@ export function buildGatewaySessionRow(params: {
     pinnedAt: entry?.pinnedAt,
     unread: deriveSessionUnread(entry),
     lastReadAt: entry?.lastReadAt,
+    markedUnreadAt: entry?.markedUnreadAt,
     agentStatus,
     observerDigest: observerDigest
       ? {
@@ -643,6 +644,7 @@ export function buildGatewaySessionRow(params: {
     estimatedCostUsd,
     status: subagentRun ? subagentStatus : entry?.status,
     lastRunError: entry?.lastRunError,
+    lastRunId: entry?.lastRunId,
     hasAutomation: sessionHasAutomation(key, cfg, sessionAgentId) ? true : undefined,
     subagentRunState,
     hasActiveSubagentRun: subagentRun || hasActiveSubagentRun ? hasActiveSubagentRun : undefined,

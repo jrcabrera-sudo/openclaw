@@ -17,7 +17,9 @@ import { applySharedChannelFieldHelp } from "../src/config/schema.channel-field-
 import { buildBaseHints } from "../src/config/schema.hints.js";
 import { applyConfigTierHints, applyResolvedConfigTierHints } from "../src/config/schema.tiers.js";
 import { CONTROL_UI_BOOTSTRAP_CONFIG_PATH } from "../src/gateway/control-ui-contract.js";
-import type { UpdateScheduleState } from "../ui/src/api/types.ts";
+import { buildUpdateRestartSentinelPayload } from "../src/infra/update-restart-sentinel-payload.js";
+import type { UpdateRunResult } from "../src/infra/update-runner.js";
+import type { UpdateAvailable, UpdateScheduleState } from "../ui/src/api/types.ts";
 import {
   createControlUiMockBootstrapConfig,
   createControlUiMockGatewayInitScript,
@@ -28,6 +30,10 @@ import {
   resolveSourcePackageAliasesForVite,
   resolveTsconfigPathAliasesForVite,
 } from "../ui/vite.config.ts";
+import {
+  buildChatAttachmentHistory,
+  createChatAttachmentFixturePlugin,
+} from "./control-ui-mock-attachments.ts";
 import { buildBackgroundTasksMock } from "./control-ui-mock-background-tasks.ts";
 import {
   buildChannelsPairingMock,
@@ -40,7 +46,16 @@ import { buildSkillWorkshopMocks } from "./control-ui-mock-skill-workshop.js";
 
 type CliOptions = {
   allowedHosts: string[];
-  fixture?: "approval" | "board" | "code-fences" | "swarm" | "workboard";
+  fixture?:
+    | "approval"
+    | "attachments"
+    | "board"
+    | "code-fences"
+    | "swarm"
+    | "update-available"
+    | "update-blocked"
+    | "update-failed"
+    | "workboard";
   host: string;
   operatorScopes?: string[];
   port: number;
@@ -80,6 +95,170 @@ const OBSERVER_DEMO_RUN_ID = "mock-session-observer-run";
 const PLAN_DEMO_RUN_ID = "mock-plan-run";
 const CUSTODIAN_CHAT_REPLY_DELAY_MS = 600;
 const CHAT_SEND_REPLY_DELAY_MS = 200;
+type UpdateFixture = {
+  available: UpdateAvailable;
+  runResponse: unknown;
+  schedule: UpdateScheduleState;
+  statusResponse: unknown;
+};
+
+function buildUpdateFixture(fixture: CliOptions["fixture"], nowMs: number): UpdateFixture | null {
+  if (
+    fixture !== "update-available" &&
+    fixture !== "update-blocked" &&
+    fixture !== "update-failed"
+  ) {
+    return null;
+  }
+
+  if (fixture === "update-available") {
+    const available: UpdateAvailable = {
+      currentVersion: "2026.8.1",
+      latestVersion: "2026.8.2",
+      channel: "latest",
+    };
+    const schedule: UpdateScheduleState = {
+      channel: "stable",
+      autoEnabled: false,
+      install: { kind: "package" },
+      target: { kind: "package", version: available.latestVersion },
+    };
+    return {
+      available,
+      schedule,
+      statusResponse: {
+        sentinel: null,
+        updateAvailable: available,
+        effectiveChannel: "stable",
+        schedule,
+      },
+      runResponse: {
+        ok: true,
+        result: {
+          status: "ok",
+          mode: "global",
+          before: { version: available.currentVersion },
+          after: { version: available.latestVersion },
+          steps: [],
+          durationMs: 12_000,
+        },
+      },
+    };
+  }
+
+  const currentSha = "83b321ba7d31c04cc6f7a38c87932ec0172b5461";
+  const upstreamSha = "ea2ab707d3ab6f9351dcdb2f3c05054097fbfa62";
+  const available: UpdateAvailable = {
+    currentVersion: "2026.8.1",
+    latestVersion: "2026.8.1",
+    channel: "dev",
+    currentSha,
+    upstreamRef: "origin/main",
+    upstreamSha,
+    commitsBehind: 2,
+    commits: [
+      { sha: "f6c71c4", subject: "Keep update status authoritative" },
+      { sha: "ea2ab70", subject: "Move update actions into Inbox" },
+    ],
+  };
+  const baseSchedule: UpdateScheduleState = {
+    channel: "dev",
+    autoEnabled: true,
+    install: {
+      kind: "git",
+      git: {
+        status: "behind",
+        currentSha,
+        commitsBehind: 2,
+        commitAtMs: nowMs - 2 * 86_400_000,
+        installedAtMs: nowMs - 7 * 86_400_000,
+      },
+    },
+    target: {
+      kind: "git",
+      upstreamRef: available.upstreamRef ?? "origin/main",
+      upstreamSha,
+      commitsBehind: 2,
+    },
+  };
+
+  if (fixture === "update-blocked") {
+    const schedule: UpdateScheduleState = {
+      ...baseSchedule,
+      campaign: {
+        id: "mock-update-waiting-for-idle",
+        state: "waiting-for-idle",
+        announcedAtMs: nowMs - 2 * 60_000,
+        forceAtMs: nowMs + 13 * 60_000,
+        updatedAtMs: nowMs,
+      },
+    };
+    return {
+      available,
+      schedule,
+      statusResponse: {
+        sentinel: null,
+        updateAvailable: available,
+        effectiveChannel: "dev",
+        schedule,
+      },
+      runResponse: {
+        ok: true,
+        result: {
+          status: "skipped",
+          mode: "git",
+          reason: "managed-service-handoff-started",
+          before: { version: available.currentVersion, sha: currentSha },
+          steps: [],
+          durationMs: 0,
+        },
+        handoff: { status: "started" },
+      },
+    };
+  }
+
+  const schedule: UpdateScheduleState = {
+    ...baseSchedule,
+    campaign: {
+      id: "mock-update-before-failure",
+      state: "waiting-for-idle",
+      announcedAtMs: nowMs - 2 * 60_000,
+      forceAtMs: nowMs + 13 * 60_000,
+      updatedAtMs: nowMs,
+    },
+  };
+  const result: UpdateRunResult = {
+    status: "error",
+    mode: "git",
+    root: "/mock/openclaw",
+    reason: "build-failed",
+    before: { version: available.currentVersion, sha: currentSha },
+    after: { version: available.latestVersion, sha: upstreamSha },
+    steps: [
+      {
+        name: "build",
+        command: "pnpm build",
+        cwd: "/mock/openclaw",
+        durationMs: 8_420,
+        stdoutTail: "",
+        stderrTail: "tsc: error TS2345",
+        exitCode: 1,
+      },
+    ],
+    durationMs: 11_640,
+  };
+  return {
+    available,
+    schedule,
+    runResponse: { ok: false, result },
+    statusResponse: {
+      sentinel: buildUpdateRestartSentinelPayload({ result, meta: {}, nowMs }),
+      updateAvailable: available,
+      effectiveChannel: "dev",
+      schedule: baseSchedule,
+    },
+  };
+}
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const uiRoot = path.join(repoRoot, "ui");
@@ -172,9 +351,13 @@ function parseFixture(value: string | undefined): CliOptions["fixture"] {
   }
   if (
     value !== "approval" &&
+    value !== "attachments" &&
     value !== "board" &&
     value !== "code-fences" &&
     value !== "swarm" &&
+    value !== "update-available" &&
+    value !== "update-blocked" &&
+    value !== "update-failed" &&
     value !== "workboard"
   ) {
     throw new Error(`Unknown Control UI mock fixture: ${value}`);
@@ -600,6 +783,18 @@ function buildModelProviderMocks(baseTime: number) {
     models: [
       { id: "claude-opus-4-8", name: "Claude Opus 4.8", provider: "anthropic", available: true },
       {
+        id: "claude-fable-5",
+        name: "Claude Fable 5",
+        provider: "anthropic",
+        available: true,
+        contextWindow: 1_000_000,
+        contextWindows: [
+          { id: "200k", label: "200K", contextWindow: 200_000 },
+          { id: "1m", label: "1M", contextWindow: 1_000_000 },
+        ],
+        contextWindowDefault: "1m",
+      },
+      {
         id: "claude-sonnet-4-6",
         name: "Claude Sonnet 4.6",
         provider: "anthropic",
@@ -730,6 +925,7 @@ function buildConfigMocks(options: { swarmEnabled?: boolean; workboardEnabled?: 
     agents: { defaults: { thinkingDefault: "medium" } },
     commands: { native: "auto", nativeSkills: "auto" },
     models: { mode: "merge" },
+    ui: { prefs: { locale: "en" } },
     ...(options.swarmEnabled ? { tools: { swarm: true } } : {}),
     ...(options.workboardEnabled ? { plugins: { entries: { workboard: { enabled: true } } } } : {}),
     channels: {
@@ -1513,6 +1709,8 @@ async function createChatPickerScenario(
       activeRunIds: [PLAN_DEMO_RUN_ID],
       childSessions: ["agent:main:lisbon-trip", ...swarmChildRows.map((row) => row.key)],
       hasActiveRun: true,
+      totalTokens: 170_000,
+      totalTokensFresh: true,
     }),
     ...swarmChildRows,
     sessionRow(OBSERVER_DEMO_SESSION_KEY, "Session observer demo", baseTime - 3_000, {
@@ -1645,30 +1843,8 @@ async function createChatPickerScenario(
   const richAttention = fixture === "approval";
   const cronMocks = buildCronMocks(Date.now(), { richAttention });
   const updateFixtureNow = Date.now();
-  const updateSchedule: UpdateScheduleState | null = richAttention
-    ? {
-        channel: "dev",
-        autoEnabled: true,
-        install: {
-          kind: "git",
-          git: { status: "behind", commitsBehind: 2 },
-        },
-        target: {
-          kind: "git",
-          upstreamRef: "origin/main",
-          upstreamSha: "a".repeat(40),
-          commitsBehind: 2,
-        },
-        campaign: {
-          id: "mock-update-campaign",
-          state: "waiting-for-idle",
-          announcedAtMs: updateFixtureNow - 2 * 60_000,
-          applyAtMs: updateFixtureNow + 15 * 60_000,
-          forceAtMs: updateFixtureNow + 60 * 60_000,
-          updatedAtMs: updateFixtureNow,
-        },
-      }
-    : null;
+  const updateFixture = buildUpdateFixture(fixture, updateFixtureNow);
+  const updateSchedule = updateFixture?.schedule ?? null;
   const heldUpdateSchedule: UpdateScheduleState | null = updateSchedule?.campaign
     ? {
         ...updateSchedule,
@@ -1711,9 +1887,11 @@ async function createChatPickerScenario(
     workboardEnabled: fixture === "workboard",
   });
   const historyMessages =
-    fixture === "code-fences"
-      ? buildCodeFenceChatHistory(baseTime)
-      : buildScrollableChatHistory(baseTime);
+    fixture === "attachments"
+      ? buildChatAttachmentHistory(baseTime)
+      : fixture === "code-fences"
+        ? buildCodeFenceChatHistory(baseTime)
+        : buildScrollableChatHistory(baseTime);
   const planSessionInfo = {
     activeRunIds: [PLAN_DEMO_RUN_ID],
     hasActiveRun: true,
@@ -1791,22 +1969,10 @@ async function createChatPickerScenario(
     assistantAgentId: "main",
     assistantName: "Molty",
     defaultAgentId: "main",
+    gatewayBootId: "mock-gateway-boot-1",
     serverBuildId: "mock",
     updateSchedule,
-    updateAvailable:
-      fixture === "approval"
-        ? {
-            channel: "dev",
-            currentVersion: "2026.8.1",
-            latestVersion: "2026.8.1",
-            upstreamSha: "a".repeat(40),
-            commitsBehind: 2,
-            commits: [
-              { sha: "abcdef1234567", subject: "Unify sidebar notifications" },
-              { sha: "fedcba7654321", subject: "Keep the footer identity compact" },
-            ],
-          }
-        : null,
+    updateAvailable: updateFixture?.available ?? null,
     // Advertised Gateway methods gate session actions (see
     // ui/src/lib/session-method-access.ts). Omitting the mutation methods left
     // every session context-menu row disabled, so the harness could not show
@@ -1839,7 +2005,7 @@ async function createChatPickerScenario(
       "sessions.create",
       "system.info",
       "terminal.open",
-      ...(richAttention ? ["update.hold", "update.run", "update.status"] : []),
+      ...(updateFixture ? ["update.hold", "update.run", "update.status"] : []),
       ...(fixture === "workboard"
         ? [
             "board.get",
@@ -2119,6 +2285,9 @@ async function createChatPickerScenario(
         cpuCount: 16,
         memoryTotalBytes: 68_719_476_736,
         memoryFreeBytes: 34_359_738_368,
+        diskTotalBytes: 1_000_000_000_000,
+        diskAvailableBytes: 640_000_000_000,
+        diskPath: "/Users/peter/.openclaw",
         defaultAgentUtilityModel: {
           status: "auto",
           model: "anthropic/claude-haiku-4-5",
@@ -2358,31 +2527,8 @@ async function createChatPickerScenario(
       "update.hold": heldUpdateSchedule
         ? { ok: true, schedule: heldUpdateSchedule }
         : { ok: false },
-      "update.run": updateSchedule
-        ? { ok: false, result: { status: "error", reason: "build-dirty" } }
-        : {},
-      "update.status": updateSchedule
-        ? {
-            sentinel: {
-              kind: "update",
-              status: "error",
-              ts: updateFixtureNow,
-              stats: {
-                reason: "build-dirty",
-                steps: [
-                  {
-                    name: "build",
-                    log: {
-                      exitCode: 1,
-                      stderrTail:
-                        "generated artifacts differ from the selected revision after the build completed; preserve the checkout and retry only after reconciling the generated files and verifying the target revision",
-                    },
-                  },
-                ],
-              },
-            },
-          }
-        : {},
+      "update.run": updateFixture?.runResponse ?? {},
+      "update.status": updateFixture?.statusResponse ?? {},
       "usage.status": modelProviders.usageStatus,
       "device.pair.list": {
         paired: [
@@ -3024,10 +3170,50 @@ function createStatefulMockInitScript(): string {
   return `(() => { const __name = (target) => target; (${installControlUiStatefulMocks.toString()})(${CUSTODIAN_CHAT_REPLY_DELAY_MS}, ${CHAT_SEND_REPLY_DELAY_MS}); })();`;
 }
 
-function createMockGatewayPlugin(scenario: ControlUiMockGatewayScenario): Plugin {
+function createMockGatewayPlugin(
+  scenario: ControlUiMockGatewayScenario,
+  fixture?: CliOptions["fixture"],
+): Plugin {
   const initScript = escapeScriptContent(createControlUiMockGatewayInitScript(scenario));
   const statefulInitScript = escapeScriptContent(createStatefulMockInitScript());
   const bootstrapBody = JSON.stringify(createControlUiMockBootstrapConfig(scenario));
+  const attachmentThemeToggle =
+    fixture === "attachments"
+      ? `    <style data-openclaw-control-ui-mock-theme-toggle>
+      .control-ui-mock-theme-toggle { position: fixed; right: 16px; bottom: 16px; z-index: 1000; display: inline-flex; gap: 2px; padding: 3px; border: 1px solid var(--border-strong); border-radius: 999px; background: var(--card); box-shadow: var(--shadow-md); }
+      .control-ui-mock-theme-toggle button { min-height: 28px; padding: 0 10px; border: 0; border-radius: 999px; color: var(--muted); background: transparent; font: inherit; font-size: 11px; font-weight: 600; cursor: pointer; }
+      .control-ui-mock-theme-toggle button[aria-pressed="true"] { color: var(--text); background: var(--bg-hover); }
+    </style>
+    <script data-openclaw-control-ui-mock-theme-toggle>
+      addEventListener("DOMContentLoaded", () => {
+        const control = document.createElement("div");
+        control.className = "control-ui-mock-theme-toggle";
+        control.setAttribute("aria-label", "Theme");
+        const apply = (mode) => {
+          const root = document.documentElement;
+          root.dataset.themeMode = mode;
+          root.dataset.themeResolved = mode;
+          root.classList.toggle("wa-light", mode === "light");
+          root.classList.toggle("wa-dark", mode === "dark");
+          root.style.colorScheme = mode;
+          for (const button of control.querySelectorAll("button")) {
+            button.setAttribute("aria-pressed", String(button.dataset.mode === mode));
+          }
+        };
+        for (const mode of ["dark", "light"]) {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.dataset.mode = mode;
+          button.textContent = mode === "dark" ? "Dark" : "Light";
+          button.addEventListener("click", () => apply(mode));
+          control.append(button);
+        }
+        document.body.append(control);
+        apply(document.documentElement.dataset.themeMode === "light" ? "light" : "dark");
+      });
+    </script>
+`
+      : "";
   return {
     configureServer(server) {
       server.middlewares.use(CONTROL_UI_BOOTSTRAP_CONFIG_PATH, (_req, res) => {
@@ -3044,7 +3230,7 @@ function createMockGatewayPlugin(scenario: ControlUiMockGatewayScenario): Plugin
     transformIndexHtml(html) {
       return html.replace(
         "</head>",
-        `    <script data-openclaw-control-ui-mock-gateway>\n${initScript}\n${statefulInitScript}\n    </script>\n  </head>`,
+        `${attachmentThemeToggle}    <script data-openclaw-control-ui-mock-locale>\n      try { localStorage.setItem("openclaw.i18n.locale", "en"); } catch {}\n    </script>\n    <script data-openclaw-control-ui-mock-gateway>\n${initScript}\n${statefulInitScript}\n    </script>\n  </head>`,
       );
     },
   };
@@ -3124,7 +3310,11 @@ const server = await createServer({
       : {}),
     include: ["lit/directives/repeat.js"],
   },
-  plugins: [createMockGatewayPlugin(scenario), createBoardFixturePlugin()],
+  plugins: [
+    createMockGatewayPlugin(scenario, options.fixture),
+    createBoardFixturePlugin(),
+    ...(options.fixture === "attachments" ? [createChatAttachmentFixturePlugin()] : []),
+  ],
   publicDir: path.join(uiRoot, "public"),
   resolve: {
     alias: [

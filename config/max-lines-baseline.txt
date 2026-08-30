@@ -194,7 +194,6 @@ extensions/qa-lab/src/live-transports/slack/slack-live.runtime.test.ts
 extensions/qa-lab/src/live-transports/whatsapp/whatsapp-live.runtime.test.ts
 extensions/qa-lab/src/mantis/slack-desktop-smoke.runtime.test.ts
 extensions/qa-lab/src/mantis/slack-desktop-smoke.runtime.ts
-extensions/qa-lab/src/mantis/telegram-desktop-builder.runtime.ts
 extensions/qa-lab/src/mantis/visual-task.runtime.ts
 extensions/qa-lab/src/providers/mock-openai/server.test.ts
 extensions/qa-lab/src/providers/mock-openai/server.ts
@@ -338,7 +337,6 @@ src/agents/embedded-agent-runner.run-embedded-agent.auth-profile-rotation.e2e.te
 src/agents/embedded-agent-runner.sanitize-session-history.test.ts
 src/agents/embedded-agent-runner/compact.hooks.harness.ts
 src/agents/embedded-agent-runner/compact.hooks.test.ts
-src/agents/embedded-agent-runner/compact.queued.ts
 src/agents/embedded-agent-runner/context-engine-maintenance.test.ts
 src/agents/embedded-agent-runner/extra-params.ts
 src/agents/embedded-agent-runner/model.provider-runtime.test-support.ts
@@ -672,7 +670,6 @@ src/gateway/session-create-service.ts
 src/gateway/session-message-events.test.ts
 src/gateway/session-reset-service.ts
 src/gateway/session-utils.fs.test.ts
-src/gateway/session-utils.fs.ts
 src/gateway/session-utils.subagent.test.ts
 src/gateway/session-utils.test.ts
 src/gateway/sessions-history-http.test.ts

@@ -187,6 +187,7 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
       OriginatingTo: ctx.OriginatingTo ?? sessionCtx.OriginatingTo,
       AccountId: ctx.AccountId ?? sessionCtx.AccountId,
       InputProvenance: ctx.InputProvenance ?? sessionCtx.InputProvenance,
+      InternalTurnSource: ctx.InternalTurnSource ?? sessionCtx.InternalTurnSource,
       ChatType: ctx.ChatType ?? sessionCtx.ChatType,
     },
     entry: preparedSessionState.sessionEntry,
@@ -408,6 +409,7 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
       toolBindings: ctx.GatewayRunToolBindings,
       chatType: replyRoute.chatType,
       agentAccountId: replyRoute.accountId,
+      conversationRoutePeerId: sessionCtx.ConversationRoutePeerId,
       conversationToolPolicy: sessionCtx.ConversationToolPolicy,
       groupId: resolveGroupSessionKey(sessionCtx)?.id ?? undefined,
       groupChannel:

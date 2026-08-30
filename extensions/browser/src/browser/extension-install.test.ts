@@ -1,10 +1,7 @@
-import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { relayTestKey } from "../../chrome-extension/relay-key.test-support.js";
 import {
   chromeProductRoots,
   generateChromeExtensionIdForPath,
@@ -19,16 +16,13 @@ import {
   uninstallChromeExtensionNativeHosts,
 } from "./extension-install.js";
 import {
-  createExtensionInstallFixtures,
   FOUNDATION_STORE_ID,
   predictedId,
+  useExtensionInstallFixture,
   writeSecurePreferences,
 } from "./extension-install.test-support.js";
 
-// Changed-file CI runs source tests without dist; full-build lanes exercise the real native host.
-const BUILT_NATIVE_HOST_PATH = path.resolve("dist/extensions/browser/native-host-entry.js");
-const { fixture, cleanup } = createExtensionInstallFixtures();
-const fileModesToRestore: Array<{ target: string; mode: number }> = [];
+const fixture = useExtensionInstallFixture();
 
 async function rewriteRegistrationOrigins(manifestPath: string, origins: string[]) {
   const manifest = JSON.parse(await fs.readFile(manifestPath, "utf8")) as {
@@ -53,111 +47,32 @@ async function rewriteRegistrationOrigins(manifestPath: string, origins: string[
   return manifest;
 }
 
-afterEach(async () => {
+afterEach(() => {
   vi.restoreAllMocks();
-  await Promise.all(
-    fileModesToRestore
-      .splice(0)
-      .map(({ target, mode }) => fs.chmod(target, mode).catch(() => undefined)),
-  );
-  await cleanup();
 });
 
-async function makeTestFilePrivate(target: string): Promise<void> {
-  if (process.platform === "win32") {
-    return;
-  }
-  const mode = (await fs.stat(target)).mode & 0o777;
-  fileModesToRestore.push({ target, mode });
-  await fs.chmod(target, mode & ~0o022);
-}
-
 describe("native host registration", () => {
-  it.runIf(existsSync(BUILT_NATIVE_HOST_PATH))(
-    "launches with the exact custom installation context when Chrome has no selectors",
-    async () => {
-      const value = await fixture();
-      const stateDir = path.join(value.root, "custom state's dir");
-      const configPath = path.join(value.root, "custom config's dir", "openclaw.json");
-      const nativeHostPath = BUILT_NATIVE_HOST_PATH;
-      await makeTestFilePrivate(nativeHostPath);
-      const relayPort = 19_031;
-      const token = relayTestKey(4);
-      const deps = {
+  it("guides first-time setup when no browser user-data directory exists", async () => {
+    const value = await fixture();
+    let now = 0;
+    const status = await installChromeExtensionBootstrap({
+      bundledDir: value.bundledDir,
+      pluginRoot: value.pluginRoot,
+      waitMs: 1_000,
+      deps: {
         ...value.deps,
-        stateDir,
-        nativeHostPath,
-        // This test executes the launcher, so it needs the real interpreter;
-        // dev/CI node installs are never group/world-writable, unlike the
-        // hosted-toolcache binary the fixture default protects against.
-        nodePath: process.execPath,
-        env: {
-          ...value.deps.env,
-          OPENCLAW_STATE_DIR: stateDir,
-          OPENCLAW_CONFIG_PATH: configPath,
+        now: () => now,
+        sleep: async (ms) => {
+          now += ms;
         },
-      };
-      await fs.mkdir(path.join(stateDir, "credentials"), { recursive: true, mode: 0o700 });
-      await fs.mkdir(path.dirname(configPath), { recursive: true, mode: 0o700 });
-      await fs.writeFile(
-        path.join(stateDir, "credentials", "browser-extension-relay.secret"),
-        `${token}\n`,
-        { mode: 0o600 },
-      );
-      await fs.writeFile(
-        configPath,
-        `${JSON.stringify({ browser: { profiles: { e2e: { driver: "extension", cdpPort: relayPort } } } })}\n`,
-        { mode: 0o600 },
-      );
-      const installed = await installStableChromeExtension(value.bundledDir, deps);
-      const chromium = chromeProductRoots(deps).find((root) => root.product === "chromium");
-      if (!chromium) {
-        throw new Error("missing Chromium fixture root");
-      }
-      const extensionId = await predictedId(installed, deps.platform);
-      await writeSecurePreferences({
-        userDataDir: chromium.userDataDir,
-        profile: "Default",
-        entries: { [extensionId]: { location: 4, path: installed } },
-      });
-      const status = await installChromeExtensionBootstrap({
-        bundledDir: value.bundledDir,
-        pluginRoot: value.pluginRoot,
-        waitMs: 1_000,
-        deps,
-      });
-      const registration = status.registrations.find((entry) => entry.product === "chromium");
-      expect(registration, status.issues.join("\n")).toMatchObject({ state: "owned" });
-      const manifest = JSON.parse(await fs.readFile(registration?.manifestPath ?? "", "utf8")) as {
-        path: string;
-      };
+      },
+    });
 
-      const nonce = Buffer.alloc(16, 7).toString("base64url");
-      const requestBody = Buffer.from(JSON.stringify({ v: 1, op: "bootstrap", nonce }));
-      const requestFrame = Buffer.alloc(requestBody.length + 4);
-      if (os.endianness() === "LE") {
-        requestFrame.writeUInt32LE(requestBody.length);
-      } else {
-        requestFrame.writeUInt32BE(requestBody.length);
-      }
-      requestBody.copy(requestFrame, 4);
-      const host = spawnSync(manifest.path, [`chrome-extension://${extensionId}/`], {
-        input: requestFrame,
-        env: { HOME: value.homeDir },
-        timeout: 10_000,
-      });
-      expect(host.status, host.stderr.toString("utf8")).toBe(0);
-      const frameLength =
-        os.endianness() === "LE" ? host.stdout.readUInt32LE() : host.stdout.readUInt32BE();
-      expect(host.stdout).toHaveLength(frameLength + 4);
-      expect(JSON.parse(host.stdout.subarray(4).toString("utf8"))).toEqual({
-        v: 1,
-        ok: true,
-        nonce,
-        pairingString: `ws://127.0.0.1:18789/browser/extension?gateway=ws%3A%2F%2F127.0.0.1%3A18789#${token}`,
-      });
-    },
-  );
+    expect(status.manualSetupRequired).toBe(true);
+    expect(status.registrations.every((entry) => entry.state === "missing")).toBe(true);
+    expect(status.issues).toEqual([expect.stringContaining("No native host was pre-registered.")]);
+    expect(status.issues[0]).toContain("if Chrome has not been launched yet, launch it first");
+  });
 
   it("pre-registers predicted IDs before waiting, then verifies Chrome's recorded ID", async () => {
     const value = await fixture();
@@ -299,6 +214,8 @@ describe("native host registration", () => {
     });
     expect(status.manualSetupRequired).toBe(true);
     expect(status.issues.join("\n")).toContain("pre-registration refused");
+    expect(status.issues.join("\n")).toContain("No native host was pre-registered.");
+    expect(status.issues.join("\n")).not.toContain("No existing Chrome-family user-data directory");
     const repair = await repairOwnedChromeExtensionNativeHosts({
       bundledDir: value.bundledDir,
       pluginRoot: value.pluginRoot,
@@ -728,7 +645,7 @@ describe("native host registration", () => {
       } else {
         await fs.chmod(
           registeredTarget,
-          failure === "non-executable" ? 0o600 : failure === "unreadable" ? 0o000 : 0o666,
+          failure === "non-executable" ? 0o600 : failure === "unreadable" ? 0o000 : 0o664,
         );
       }
 
@@ -751,7 +668,7 @@ describe("native host registration", () => {
       expect(await fs.readFile(manifest.path, "utf8")).toBe(launcherBytes);
       expect(existsSync(executed)).toBe(false);
 
-      if (failure === "non-executable" || failure === "unreadable") {
+      if (failure === "non-executable" || failure === "unreadable" || failure === "unsafe-mode") {
         const onProgress = vi.fn();
         const reinstall = await installChromeExtensionBootstrap({
           ...params,
@@ -763,6 +680,10 @@ describe("native host registration", () => {
           expect.stringContaining("Native bootstrap is ready"),
         );
         expect(reinstall.issues.join("\n")).toContain("pre-registration refused");
+        expect(reinstall.issues.join("\n")).toContain("No native host was pre-registered.");
+        expect(reinstall.issues.join("\n")).not.toContain(
+          "No existing Chrome-family user-data directory",
+        );
         expect(await fs.readFile(registration.manifestPath, "utf8")).toBe(manifestBytes);
         expect(await fs.readFile(manifest.path, "utf8")).toBe(launcherBytes);
       }

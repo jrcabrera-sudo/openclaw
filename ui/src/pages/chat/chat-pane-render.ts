@@ -29,7 +29,7 @@ import { buildAgentMainSessionKey } from "../../lib/sessions/session-key.ts";
 import { showToast } from "../../lib/toast.ts";
 import { generateUUID } from "../../lib/uuid.ts";
 import { mutateChatGoal, submitChatGoalDraft } from "./chat-goals.ts";
-import { clearChatHistory } from "./chat-history.ts";
+import { clearChatHistory, getChatHistoryVersion } from "./chat-history.ts";
 import { resolveChatMessageAccess } from "./chat-message-access.ts";
 import { requiresChatModelSetup } from "./chat-model-setup.ts";
 import { ChatPaneLayoutRender } from "./chat-pane-layout-render.ts";
@@ -38,7 +38,6 @@ import {
   createChatPaneSessionActionCallbacks,
   readChatPaneMutationAccess,
   renderChatPaneComposerControls,
-  resolveChatModelCatalogState,
 } from "./chat-pane-session-controls.ts";
 import { resolveSidebarLayoutForBoard } from "./chat-pane-sidebar-layout.ts";
 import {
@@ -56,6 +55,7 @@ import {
   selectedChatSessionRow,
 } from "./chat-state-route.ts";
 import type { ChatProps } from "./chat-view.ts";
+import { getChatComposerState } from "./components/chat-composer-state.ts";
 import { chatPullRequestId, createPullRequestBranch } from "./components/chat-pull-requests.ts";
 import {
   openSessionWorkspaceFile,
@@ -143,27 +143,27 @@ export class ChatPane extends ChatPaneLayoutRender {
     const currentAgentId = resolveChatAgentId(state);
     const { catalogKey, chatProps } = resolveChatMessageAccess(state);
     const overlays = this.context?.overlays;
-    const inlineApproval = findInlineApproval(
-      overlays?.snapshot?.approvalQueue ?? [],
-      state.sessionKey,
-    );
+    const inlineApproval =
+      findInlineApproval(state.chatSessionApprovalQueue ?? [], state.sessionKey) ??
+      findInlineApproval(overlays?.snapshot?.approvalQueue ?? [], state.sessionKey);
     // Tool rows consult the global title store while rendering. Requests capture
     // session + agent at schedule time, so another pane cannot re-route them.
     configureToolTitleFetcher({
       client: state.connected ? state.client : null,
       sessionKey: catalogKey ? null : state.sessionKey || null,
       agentId: currentAgentId || null,
-      onTitlesChanged: () => state.requestUpdate?.(),
+      schedulingEnabled: this.active && this.presented,
+      historyOwner: state,
+      historyVersion: getChatHistoryVersion(state),
     });
     const selectedAgent = this.context.agents.state.agentsList?.agents.find(
       (agent) => agent.id === currentAgentId,
     );
     const agentDefaultModel = selectedAgent?.model?.primary;
-    const modelCatalogState = resolveChatModelCatalogState(state);
     const modelUnavailableReason = resolveChatModelUnavailableReason(
       selectedSession?.model ?? agentDefaultModel,
       selectedSession?.modelProvider,
-      modelCatalogState.status === "ready" ? state.chatModelCatalog : [],
+      state.chatModelCatalog,
     );
     const modelSetupRequired = requiresChatModelSetup({
       catalog: catalogKey !== null,
@@ -220,7 +220,7 @@ export class ChatPane extends ChatPaneLayoutRender {
       isGatewayMethodAdvertised(gatewaySnapshot, "session.typing") === true &&
       hasSessionPresenceViewers(
         this.presencePayload,
-        gatewaySnapshot.selfUser?.identity?.id,
+        gatewaySnapshot.selfUser,
         gatewaySnapshot.client?.instanceId,
         state.sessionKey,
       );
@@ -244,7 +244,7 @@ export class ChatPane extends ChatPaneLayoutRender {
       });
     const selfUser = resolveCurrentSelfUser({
       snapshotUser: gatewaySnapshot.selfUser,
-      presenceEntries: readPresenceEntries(gatewaySnapshot.hello?.snapshot),
+      presenceEntries: readPresenceEntries(this.presencePayload),
       presenceInstanceId: gatewaySnapshot.client?.instanceId,
     });
     const runOutputTokens = resolveActiveRunOutputTokens({
@@ -290,6 +290,7 @@ export class ChatPane extends ChatPaneLayoutRender {
           state,
           selectedSession,
           agentDefaultModel,
+          agentDefaultPermissionMode: selectedAgent?.defaultPermissionMode,
           modelAccess: mutationAccess.model,
           effortAccess: mutationAccess.effort,
           permissionAccess: mutationAccess.permission,
@@ -330,6 +331,7 @@ export class ChatPane extends ChatPaneLayoutRender {
       progressCardHasActiveRun: Boolean(
         state.chatRunId || (selectedSession && isSessionRunActive(selectedSession)),
       ),
+      collapseTaskProgress: state.settings.chatCollapseTaskProgress === true,
       onDismissProgressCard,
       gatewayQuestionPrompts: catalogKey || sessionParticipationBlocked ? [] : this.questionPrompts,
       onGatewayQuestionChange: () => {
@@ -422,7 +424,8 @@ export class ChatPane extends ChatPaneLayoutRender {
       approvalErrors: overlays?.snapshot?.approvalErrors,
       onApprovalDecision:
         overlays && !sessionParticipationBlocked
-          ? (approvalId, decision) => overlays.decideApproval(decision, approvalId)
+          ? (approvalId, decision) =>
+              overlays.decideApproval(decision, approvalId, inlineApproval ?? undefined)
           : undefined,
       workspaceConflict: visibleWorkspaceConflict,
       onDismissWorkspaceConflict:
@@ -436,10 +439,17 @@ export class ChatPane extends ChatPaneLayoutRender {
             }
           : undefined,
       sessions: state.sessionsResult,
+      selectedSession: catalogKey ? undefined : selectedSession,
       toolOverrides: selectedSession?.toolOverrides,
       capabilityMenu: catalogKey
         ? undefined
-        : this.composerCapabilities.props(this.context, state, selectedSession, currentAgentId),
+        : this.composerCapabilities.props(
+            this.context,
+            state,
+            selectedSession,
+            currentAgentId,
+            getChatComposerState(this.presentationId).capabilityMenuView.startsWith("tools:"),
+          ),
       swarmSessions: this.swarmHydrator?.rows ?? [],
       sessionHost: {
         assistantAgentId: state.assistantAgentId,
@@ -603,6 +613,7 @@ export class ChatPane extends ChatPaneLayoutRender {
       queuedEdit: {
         editingId: activeQueuedMessageEdit(state)?.id ?? null,
         editingText: activeQueuedMessageEdit(state)?.draftText,
+        source: activeQueuedMessageEdit(state)?.source,
         onEdit: sessionParticipationBlocked ? undefined : state.editQueuedChatMessage,
         onEditChange: sessionParticipationBlocked ? undefined : state.updateQueuedChatMessageEdit,
         onEditSubmit: sessionParticipationBlocked ? undefined : state.submitQueuedChatMessageEdit,

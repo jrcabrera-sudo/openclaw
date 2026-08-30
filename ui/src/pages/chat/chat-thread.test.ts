@@ -2426,6 +2426,10 @@ describe("buildCachedChatItems", () => {
       });
     const result = (id: string, text = "ready", runId: string | undefined = "run-a") =>
       toolResultMessage(id, "exec", [{ type: "text", text }], 20, { runId });
+    const canonical = ({ runId, ...message }: Record<string, unknown>, seq: number) => ({
+      ...message,
+      __openclaw: { id: `tool-entry-${seq}`, seq, runId },
+    });
     const snapshot = (id: string, completed = true) =>
       assistantMessage(
         [
@@ -2471,6 +2475,97 @@ describe("buildCachedChatItems", () => {
         const cards = cardsFor(messages);
         expect(cards).toHaveLength(1);
         expect(cards[0]).toMatchObject({ completed: true, outputText: "" });
+      },
+    );
+
+    it.each(
+      [false, true].flatMap((completed) =>
+        ["live", "canonical"].map((owner) => ({ completed, owner })),
+      ),
+    )(
+      "keeps one invocation before an optimistic steer ($owner ownership, completed=$completed)",
+      ({ completed, owner }) => {
+        const persisted = [call("exec-1"), ...(completed ? [result("exec-1")] : [])].map(
+          (message, index) => (owner === "canonical" ? canonical(message, index + 2) : message),
+        );
+        const history = [
+          userMessage("Original request", 1, {
+            __openclaw: { id: "user-entry", seq: 1 },
+          }),
+          ...persisted,
+          userMessage("Follow up after the command", 15, {
+            __openclaw: { idempotencyKey: "steer-send:user" },
+          }),
+        ];
+        const before = structuredClone(history);
+        const groups = messageGroups({
+          runId: "run-a",
+          messages: history,
+          toolMessages: [snapshot("exec-1", completed)],
+        });
+        const visible = groups.flatMap((group) =>
+          group.messages.flatMap((entry) => {
+            const cards = extractToolCards(entry.message, entry.key);
+            return cards.length ? cards : [requireRecord(entry.message).content];
+          }),
+        );
+
+        expect(visible).toEqual([
+          "Original request",
+          expect.objectContaining({
+            callId: "exec-1",
+            completed,
+            outputText: completed ? "ready" : "working",
+          }),
+          "Follow up after the command",
+        ]);
+        expect(history).toEqual(before);
+      },
+    );
+
+    it("keeps canonical sibling invocation owners when live runs reuse a call id", () => {
+      const cards = cardsFor(
+        [
+          canonical(call("shared"), 1),
+          canonical(result("shared", "first result"), 2),
+          canonical(call("shared", "exec", "run-b"), 3),
+          canonical(result("shared", "second result", "run-b"), 4),
+        ],
+        [snapshot("shared", false), { ...snapshot("shared", false), runId: "run-b" }],
+      );
+      expect(cards).toHaveLength(2);
+      expect(cards.map((card) => card.outputText)).toEqual(["first result", "second result"]);
+      expect(cards.every((card) => card.completed)).toBe(true);
+    });
+
+    it.each(["different run", "unknown history run", "unknown live run", "reset", "reused"])(
+      "does not relocate a live invocation across a boundary with %s ownership",
+      (ownership) => {
+        const persisted = call("exec-1");
+        const live = snapshot("exec-1", false);
+        if (ownership === "different run") {
+          persisted.runId = "run-b";
+        } else if (ownership === "unknown history run") {
+          persisted.runId = undefined;
+        } else if (ownership === "unknown live run") {
+          live.runId = undefined;
+        }
+        const groups = messageGroups({
+          runId: "run-a",
+          messages: [
+            userMessage("Original request", 1),
+            persisted,
+            ...(ownership === "reset" ? [resetMessage("reset-invocation")] : []),
+            userMessage("Next request", 15),
+            ...(ownership === "reused" ? [call("exec-1")] : []),
+          ],
+          toolMessages: [live],
+        });
+        const cards = groups.flatMap((group) =>
+          group.messages.flatMap((entry) => extractToolCards(entry.message, entry.key)),
+        );
+        expect(cards).toHaveLength(2);
+        expect(cards.filter((card) => card.outputText === "working")).toHaveLength(1);
       },
     );
 
@@ -3876,7 +3971,12 @@ describe("buildCachedChatItems", () => {
       sendAttempts: 1,
     };
 
-    for (const sendState of ["waiting-idle", "waiting-reconnect", "sending"] as const) {
+    expect(
+      messageGroups({
+        queue: [{ ...restored, sendAttempts: 0, sendState: "waiting-reconnect" }],
+      }),
+    ).toStrictEqual([]);
+    for (const sendState of ["waiting-reconnect", "sending"] as const) {
       const groups = messageGroups({ queue: [{ ...restored, sendState }] });
       expect(groups).toHaveLength(1);
       expect(messageRecord(groupAt(groups, 0)).content).toStrictEqual([
@@ -3885,68 +3985,21 @@ describe("buildCachedChatItems", () => {
     }
   });
 
-  it("keeps future queued bubbles at the tail with stable keys through extension and admission", () => {
-    const first = queuedSend("first", "First follow-up", 3_000, "waiting-idle", {
-      sendRunId: "first-run",
-      sendAttempts: 0,
-    });
-    const second = queuedSend("second", "Second follow-up", 2_000, "waiting-idle", {
-      sendRunId: "second-run",
-      sendAttempts: 0,
-    });
-    const active = userMessage("Active prompt", 1_000, {
-      __openclaw: { idempotencyKey: "active-run:user" },
-    });
-    const build = (
-      queue: ChatQueueItem[],
-      messages = [active],
-      stream: string | null = "Still working",
-    ) =>
-      buildCachedChatItems(
-        createProps({
-          paneId: "future-queue-handoff",
-          runId: "active-run",
-          messages,
-          queue,
-          stream,
-          streamStartedAt: 9_000,
-          runWorking: stream !== null,
-        }),
-      );
-    const initial = build([first, second]);
-    expect(initial.map((item) => (item.kind === "group" ? item.role : item.kind))).toEqual([
-      "user",
-      "stream",
-      "reading-indicator",
-      "user",
-      "user",
+  it("keeps steerable queued sends out of the thread until sending starts", () => {
+    const queued = {
+      id: "pending-send-1",
+      text: "wait above the composer",
+      createdAt: 2,
+      sendSubmittedAtMs: 10,
+    };
+
+    expect(messageGroups({ queue: [{ ...queued, sendState: "waiting-idle" }] })).toStrictEqual([]);
+
+    const groups = messageGroups({ queue: [{ ...queued, sendState: "sending" }] });
+    expect(groups).toHaveLength(1);
+    expect(messageRecord(groupAt(groups, 0)).content).toStrictEqual([
+      { type: "text", text: "wait above the composer" },
     ]);
-    const queuedGroups = initial.slice(-2) as MessageGroup[];
-    expect(queuedGroups.map((group) => messageRecord(group).content)).toEqual([
-      [{ type: "text", text: first.text }],
-      [{ type: "text", text: second.text }],
-    ]);
-    const keys = queuedGroups.map((group) => [group.key, group.messages[0]?.key]);
-    const extended = { ...first, text: first.text + "\nAdditional detail" };
-    const grown = build([extended, second]).slice(-2) as MessageGroup[];
-    expect(grown.map((group) => [group.key, group.messages[0]?.key])).toEqual(keys);
-    expect(messageRecord(grown[0]!).content).toEqual([{ type: "text", text: extended.text }]);
-    const reordered = build([second, extended]).slice(-2) as MessageGroup[];
-    expect(reordered.map((group) => [group.key, group.messages[0]?.key])).toEqual(
-      keys.toReversed(),
-    );
-    const sending = messageGroups({
-      paneId: "future-queue-handoff",
-      messages: [active],
-      queue: [{ ...extended, sendState: "sending", sendAttempts: 1 }, second],
-    });
-    expect(sending.slice(-2).map((group) => [group.key, group.messages[0]?.key])).toEqual(keys);
-    const admitted = userMessage(extended.text, 10_000, {
-      __openclaw: { id: "persisted-first", seq: 10, idempotencyKey: "first-run:user" },
-    });
-    const history = build([second], [active, admitted], null).slice(-2) as MessageGroup[];
-    expect(history.map((group) => [group.key, group.messages[0]?.key])).toEqual(keys);
-    resetChatThreadState("future-queue-handoff");
   });
 
   it("renders submitted queued attachment sends with attachment blocks before chat.send ACK", () => {
@@ -3987,10 +4040,10 @@ describe("buildCachedChatItems", () => {
       ],
     });
 
-    expect(groups).toHaveLength(2);
-    expect(groups.map((group) => group.messages.length)).toEqual([1, 1]);
+    expect(groups).toHaveLength(1);
+    expect(groupAt(groups, 0).messages).toHaveLength(2);
     expect(messageAt(groupAt(groups, 0), 0).duplicateCount).toBeUndefined();
-    expect(messageAt(groupAt(groups, 1), 0).duplicateCount).toBeUndefined();
+    expect(messageAt(groupAt(groups, 0), 1).duplicateCount).toBeUndefined();
   });
 
   it.each(["sending", "failed", "unconfirmed"] as const)(

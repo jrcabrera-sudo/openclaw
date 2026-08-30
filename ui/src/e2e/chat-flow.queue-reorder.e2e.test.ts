@@ -9,8 +9,6 @@ import {
 
 const suite = createChatFlowE2eSuite();
 
-const queuedBubbleSelector = ".chat-group.user:has(.chat-queue__item)";
-
 const QUEUED = ["review the migration", "then update the docs", "finally run the smoke"] as const;
 const failureReloadProofDir = path.join(
   process.cwd(),
@@ -41,13 +39,10 @@ suite.define(() => {
       for (const message of QUEUED) {
         await composer.fill(message);
         await composer.press("Enter");
-        await page.locator(queuedBubbleSelector, { hasText: message }).waitFor({ timeout: 10_000 });
+        await page.locator(".chat-queue__item", { hasText: message }).waitFor({ timeout: 10_000 });
       }
 
-      const queueText = () =>
-        page
-          .locator(`${queuedBubbleSelector} .chat-bubble .chat-text`)
-          .evaluateAll((bubbles) => bubbles.map((bubble) => bubble.textContent?.trim() ?? ""));
+      const queueText = () => page.locator(".chat-queue__item .chat-queue__text").allTextContents();
       expect(await queueText()).toEqual([...QUEUED]);
 
       // One handle per movable row, and it is the whole reorder surface.
@@ -78,7 +73,18 @@ suite.define(() => {
       viewport: { height: 900, width: 1280 },
     });
     const page = await context.newPage();
-    const gateway = await installMockGateway(page);
+    const gateway = await installMockGateway(page, {
+      // A real active turn holds the restored queue while we inspect its order.
+      sessions: [
+        {
+          key: "agent:main:main",
+          kind: "direct",
+          hasActiveRun: true,
+          activeRunIds: ["queue-order-holder"],
+          status: "running",
+        },
+      ],
+    });
 
     try {
       await page.goto(`${suite.server.baseUrl}chat`);
@@ -90,13 +96,10 @@ suite.define(() => {
       for (const message of QUEUED) {
         await composer.fill(message);
         await composer.press("Enter");
-        await page.locator(queuedBubbleSelector, { hasText: message }).waitFor({ timeout: 10_000 });
+        await page.locator(".chat-queue__item", { hasText: message }).waitFor({ timeout: 10_000 });
       }
 
-      const queueText = () =>
-        page
-          .locator(`${queuedBubbleSelector} .chat-bubble .chat-text`)
-          .evaluateAll((bubbles) => bubbles.map((bubble) => bubble.textContent?.trim() ?? ""));
+      const queueText = () => page.locator(".chat-queue__item .chat-queue__text").allTextContents();
       expect(await queueText()).toEqual([...QUEUED]);
       if (captureUiProofEnabled) {
         await page.screenshot({ path: `${failureReloadProofDir}/01-queued-before-failure.png` });
@@ -116,8 +119,10 @@ suite.define(() => {
       await page.locator(".chat-queue__item").nth(2).locator(".chat-queue__grip").focus();
       await page.keyboard.press("ArrowUp");
 
-      // Give the failed move a moment to settle, then confirm nothing moved.
-      await page.waitForTimeout(300);
+      await page
+        .getByRole("alert")
+        .filter({ hasText: "Could not store this message for reconnect." })
+        .waitFor();
       expect(await queueText()).toEqual([...QUEUED]);
       if (captureUiProofEnabled) {
         await page.screenshot({
@@ -135,7 +140,7 @@ suite.define(() => {
       const storedQueueOrder = () =>
         page.evaluate(() =>
           Object.entries(sessionStorage)
-            .filter(([key]) => key.startsWith("openclaw.control.chatComposer.v2:"))
+            .filter(([key]) => key.startsWith("openclaw.control.chatComposer.v4:"))
             .flatMap(([, value]) => {
               try {
                 const parsed = JSON.parse(value) as {
@@ -164,7 +169,7 @@ suite.define(() => {
       // order can be confirmed rendered, not just stored.
       await gateway.setOnline(true);
       await page.locator("openclaw-chat-pane").waitFor({ state: "attached", timeout: 15_000 });
-      await page.locator(queuedBubbleSelector, { hasText: QUEUED[0] }).waitFor({ timeout: 10_000 });
+      await page.locator(".chat-queue__item", { hasText: QUEUED[0] }).waitFor({ timeout: 10_000 });
       expect(await queueText()).toEqual([...QUEUED]);
       if (captureUiProofEnabled) {
         await page.screenshot({

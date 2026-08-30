@@ -31,7 +31,7 @@ suite.define(() => {
       ],
       defaultId: "main",
       mainKey: "main",
-      scope: "agent",
+      scope: "global",
     };
     const historyResponse = (active: boolean) => ({
       messages: [],
@@ -57,6 +57,8 @@ suite.define(() => {
         },
       ]);
     const gateway = await installMockGateway(page, {
+      sessionScope: "global",
+      mainSessionKey: "global",
       methodResponses: {
         "agents.list": agentsList,
         "chat.history": {
@@ -100,7 +102,7 @@ suite.define(() => {
       const prompt = "deliver the work outbox independently";
       await composer.fill(prompt);
       await page.getByRole("button", { name: "Send message" }).click();
-      const queue = page.locator(".chat-group.user:has(.chat-queue__item)", { hasText: prompt });
+      const queue = page.locator(".chat-queue");
       await queue.getByText("Waiting for reconnect").waitFor({ timeout: 10_000 });
       if (artifactDir) {
         await page.screenshot({

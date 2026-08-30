@@ -509,8 +509,8 @@ export class OpenClawApp extends OpenClawLightDomElement {
           .client=${gatewayConnected ? gatewaySnapshot.client : null}
           .available=${desktopAvailable}
           .documentMode=${true}
-          .documentSource=${source}
-          .documentSession=${session}
+          .requestedSource=${source}
+          .sessionKey=${session}
           .documentControl=${focusTarget.control}
           .onDocumentClose=${() => this.closeDocument(context.basePath)}
         ></openclaw-desktop-panel>
@@ -598,7 +598,7 @@ export class OpenClawApp extends OpenClawLightDomElement {
     if (runtime.documentMode?.kind === "approval") {
       return html`
         <openclaw-tooltip-provider>
-          ${gatewayUrlConfirmation} ${this.renderApprovalDocument(runtime)}
+          ${this.pendingGatewayUrl ? gatewayUrlConfirmation : this.renderApprovalDocument(runtime)}
         </openclaw-tooltip-provider>
       `;
     }

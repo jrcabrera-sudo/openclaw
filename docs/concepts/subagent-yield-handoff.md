@@ -34,6 +34,14 @@ The implementation owners are `subagent-registry-requester-yield.ts`,
 `agent-task-tracking.ts`. `adoptPausedSubagentRunForFollowUp` uses the existing
 registry replacement operation; it does not create a second delegated task.
 
+Private child results wait for their spawning turn to settle before individual
+announcement admission. Normal settlement resumes each finished private child,
+even while siblings are still running. Explicit yield assigns the frozen batch
+first, then resumes child cleanup under that owner. Late announcement failures
+cannot replace the batch's delivery state; already committed delivery evidence
+remains valid. Restart activation reconciles retained requester-turn bindings
+before resuming child completion.
+
 Settlement dispatch uses `subagent_settle` input provenance. Individual
 announcements and the older descendant-wake path retain `subagent_announce`:
 the latter already owns its run replacement after dispatch and must not trigger
@@ -77,7 +85,13 @@ with its scheduler-owned continuation.
   IDs, and yield generation.
 - **Bounded delivery.** Existing limits remain: three attempts, three ambiguous
   transport replays, and ten stale deferrals. Active descendants do not consume
-  the stale-deferral budget. Findings are capped at 4,096 characters, individual
+  the stale-deferral budget. A private handoff's observation timeout does not
+  cancel the underlying Gateway turn. When the Gateway reports that turn as
+  in flight, settlement observes the same request without spending failure
+  attempts or discarding the child results. Gateway admission and execution
+  retain their own timeouts; explicit cancellation still stops the turn.
+  Individual private announcements keep their existing delivery deadline.
+  Findings are capped at 4,096 characters, individual
   results at 512, and route notices at 1,024. Ambiguous replay reuses its attempt
   key; it does not assert global exactly-once delivery across Gateway restarts.
 

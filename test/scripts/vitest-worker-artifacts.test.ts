@@ -529,16 +529,17 @@ describe.concurrent("fresh compiled subprocess invocation", () => {
       );
     }));
 
-  it.each(["src/infra/runtime-process-entrypoints.ts", "src/tui/tui-pty-runtime-test-support.ts"])(
-    "recognizes native and Windows-normalized declaration IDs for %s",
-    (source) => {
-      const declaration = path.join(root, source);
-      expect(isVitestWorkerDeclaration(declaration)).toBe(true);
-      expect(isVitestWorkerDeclaration(declaration.replaceAll("\\", "/"))).toBe(true);
-      expect(isVitestWorkerDeclaration(declaration.replaceAll("/", "\\"))).toBe(true);
-      expect(isVitestWorkerDeclaration(`${declaration}.unrelated`)).toBe(false);
-    },
-  );
+  it.each([
+    "src/infra/runtime-process-entrypoints.ts",
+    "src/tui/tui-pty-runtime-test-support.ts",
+    "src/plugins/runtime-retention-entrypoint.test-support.ts",
+  ])("recognizes native and Windows-normalized declaration IDs for %s", (source) => {
+    const declaration = path.join(root, source);
+    expect(isVitestWorkerDeclaration(declaration)).toBe(true);
+    expect(isVitestWorkerDeclaration(declaration.replaceAll("\\", "/"))).toBe(true);
+    expect(isVitestWorkerDeclaration(declaration.replaceAll("/", "\\"))).toBe(true);
+    expect(isVitestWorkerDeclaration(`${declaration}.unrelated`)).toBe(false);
+  });
 
   it("uses the prepared Anthropic failover hook in a fresh process without global activation", ({
     workerArtifacts,
@@ -1288,8 +1289,43 @@ export default class {
       const initialDirectory = initial.descriptor.directory;
       try {
         const manifest = await prepareWorkers(initial);
+        expect(Object.keys(manifest.inputs)).toEqual(
+          expect.arrayContaining([
+            path.join(root, "src/plugins/runtime-retention-entrypoint.test-support.ts"),
+            path.join(root, "src/plugins/runtime.retention.test-support.ts"),
+          ]),
+        );
         expect(fs.existsSync(path.join(initialDirectory, "dist/native"))).toBe(false);
         expect(Object.keys(manifest.outputs).some((name) => name.endsWith(".node"))).toBe(false);
+        const cli = await node(
+          [path.join(initialDirectory, "dist/entry.js"), "--version"],
+          fixture,
+          {
+            PATH: process.env.PATH,
+            SystemRoot: process.env.SystemRoot,
+            WINDIR: process.env.WINDIR,
+            HOME: fixture,
+            USERPROFILE: fixture,
+            TMPDIR: fixture,
+            TMP: fixture,
+            TEMP: fixture,
+            OPENCLAW_NO_RESPAWN: "1",
+          },
+        );
+        expect(cli.code, cli.stderr + cli.stdout).toBe(0);
+        expect(cli.stdout).toContain(
+          `OpenClaw ${JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")).version}`,
+        );
+        const launcher = path.join(initialDirectory, "node-host-launcher.mjs");
+        const capturedLauncher = fs.readFileSync(launcher);
+        try {
+          fs.appendFileSync(launcher, "\n// altered after capture\n");
+          await expect(verifyVitestWorkerArtifacts(initialDirectory)).rejects.toThrow(
+            "Compiled subprocess artifact changed: ../node-host-launcher.mjs",
+          );
+        } finally {
+          fs.writeFileSync(launcher, capturedLauncher);
+        }
         // The compiled graph shares installed configuration. Explicitly start
         // without native code, then enable it on the same retained Root.
         const policy = await node(
@@ -1452,7 +1488,9 @@ export default class {
         );
         fs.writeFileSync(dependency, changedSource);
         for (const input of [
+          "node-host-launcher.mjs",
           "src/tui/tui-pty-runtime-test-support.ts",
+          "src/plugins/runtime-retention-entrypoint.test-support.ts",
           "scripts/lib/managed-windows-job-entrypoint.mts",
           "scripts/lib/managed-windows-job.mts",
         ]) {

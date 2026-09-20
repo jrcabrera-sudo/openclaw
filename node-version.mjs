@@ -3,7 +3,7 @@ const NODE_RELEASE_VERSION_RE =
   /^v?((?:0|[1-9]\d*))\.((?:0|[1-9]\d*))\.((?:0|[1-9]\d*))(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/u;
 
 const NODE_RELEASE_FLOORS = [
-  { major: 24, minor: 16, patch: 0 },
+  { major: 22, minor: 0, patch: 0 },
   { major: 26, minor: 1, patch: 0 },
 ];
 const HIGHEST_RELEASE_FLOOR = NODE_RELEASE_FLOORS[NODE_RELEASE_FLOORS.length - 1];

@@ -15,7 +15,7 @@ import { queuePluginSessionsChanged } from "../plugins/gateway-events.js";
 import { operatorScopeSatisfied } from "../shared/operator-scope-compat.js";
 import { isBrowserCopilotClient } from "../utils/message-channel.js";
 import { ADMIN_SCOPE, QUESTIONS_SCOPE, READ_SCOPE, WRITE_SCOPE } from "./method-scopes.js";
-import { hasEventScope } from "./server-broadcast-scopes.js";
+import { hasEventScope, modelMetadataInvalidationFragment } from "./server-broadcast-scopes.js";
 import type {
   GatewayBroadcastFn,
   GatewayBroadcastOpts,
@@ -46,10 +46,47 @@ const SESSION_SUBSCRIPTION_EVENTS = new Set([
   "session.tool",
 ]);
 
-function serializeFrameField(name: "payload" | "stateVersion", value: unknown): string {
+type MessageStringEncoding = {
+  values: Map<string, unknown>;
+  capture: boolean;
+};
+
+const rawJSON = "rawJSON" in JSON && typeof JSON.rawJSON === "function" ? JSON.rawJSON : undefined;
+
+function serializeFrameField(
+  name: "payload" | "stateVersion",
+  value: unknown,
+  messageStrings?: MessageStringEncoding,
+): string {
   // Keep the wrapper for toJSON's property key and reuse its serialized field.
   // Only splice wrappers that still start with that field after inherited toJSON.
-  const fieldJSON = JSON.stringify({ [name]: value });
+  const field = { [name]: value };
+  let payload: unknown;
+  const messageObjects = messageStrings ? new WeakSet<object>() : undefined;
+  const fieldJSON = JSON.stringify(
+    field,
+    messageStrings &&
+      function (this: object, key: string, current: unknown): unknown {
+        if (this === field) {
+          payload = current;
+        } else if ((this === payload && key === "message") || messageObjects!.has(this)) {
+          if (typeof current === "string" && current.length >= 1024) {
+            const encoded = messageStrings.values.get(current);
+            if (encoded !== undefined) {
+              return encoded;
+            }
+            if (messageStrings.capture) {
+              const prepared = rawJSON!(JSON.stringify(current));
+              messageStrings.values.set(current, prepared);
+              return prepared;
+            }
+          } else if (current !== null && typeof current === "object") {
+            messageObjects!.add(current);
+          }
+        }
+        return current;
+      },
+  );
   return fieldJSON.startsWith(`{"${name}":`) ? `,${fieldJSON.slice(1, -1)}` : "";
 }
 
@@ -246,6 +283,9 @@ export function createGatewayBroadcaster(params: {
     const presencePayload =
       // SAFETY: Internal presence producers emit { presence: SystemPresence[] }; wire input cannot publish events.
       event === "presence" ? (payload as { presence: SystemPresence[] }) : undefined;
+    // The bounded signal has no caller-provided serialization or model/config data.
+    const metadataInvalidation =
+      event === "chat.metadata.changed" ? modelMetadataInvalidationFragment(payload) : undefined;
     let projectPresence: ((client: GatewayWsClient) => SystemPresence[]) | undefined;
     let projectSession: ((client: GatewayWsClient) => unknown) | undefined;
     let skipSourcePayload = false;
@@ -268,7 +308,12 @@ export function createGatewayBroadcaster(params: {
       });
     const frameBaseFor = (value: unknown): FrameBase => ({
       ...getFrameFields(),
-      payloadFragment: presencePayload ? "" : serializeFrameField("payload", value),
+      payloadFragment:
+        value === payload && metadataInvalidation !== undefined
+          ? metadataInvalidation
+          : presencePayload
+            ? ""
+            : serializeFrameField("payload", value),
     });
     // Lazy so filtered-out broadcasts (zero eligible clients) never pay
     // JSON.stringify for the payload.
@@ -284,6 +329,15 @@ export function createGatewayBroadcaster(params: {
       : targetConnIds
         ? params.clients.getByConnectionIds(targetConnIds)
         : params.clients;
+    // Reuse immutable string encodings, never recipient rows or mutable message objects.
+    // Only the first serialized projection populates this fanout-local cache.
+    const messageStrings: MessageStringEncoding | undefined =
+      rawJSON &&
+      event === "session.message" &&
+      !retained &&
+      (targetConnIds?.size ?? params.clients.size) > 1
+        ? { values: new Map(), capture: true }
+        : undefined;
     for (const c of recipients) {
       // Closing nodes remain discoverable until their owner drains admitted lifecycle work.
       if (
@@ -302,6 +356,13 @@ export function createGatewayBroadcaster(params: {
         questionRecipient !== undefined &&
         !operatorScopeSatisfied(QUESTIONS_SCOPE, c.connect.scopes ?? []);
       if (!hasEventScope(c, event, explicitPluginScope, ownRunQuestion)) {
+        continue;
+      }
+      if (
+        event === "chat.metadata.changed" &&
+        !operatorScopeSatisfied(READ_SCOPE, c.connect.scopes ?? []) &&
+        metadataInvalidation === undefined
+      ) {
         continue;
       }
       if (questionRecipient && !isCurrent(() => questionRecipient(c))) {
@@ -531,7 +592,14 @@ export function createGatewayBroadcaster(params: {
           if (projected === undefined) {
             continue;
           }
-          payloadFragment = serializeFrameField("payload", projected);
+          payloadFragment = serializeFrameField(
+            "payload",
+            projected,
+            messageStrings?.capture || messageStrings?.values.size ? messageStrings : undefined,
+          );
+          if (messageStrings) {
+            messageStrings.capture = false;
+          }
         }
         // A drained write can refresh the recipient; cache only the profile at this send.
         const recipientProfileId =

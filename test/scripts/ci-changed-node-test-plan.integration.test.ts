@@ -88,6 +88,7 @@ it("keeps UI fallback with its complete canonical owners beside precise core cha
   expect(shards).not.toBeNull();
   expect(hasControlUiPerformanceAffectingChange([paths[2]!])).toBe(true);
   const full = createNodeTestShardBundles({
+    changedPaths: paths,
     compactMode: "pull-request",
     runnerBackend: "hybrid",
     includeReleaseOnlyRuntimeTests: false,
@@ -148,7 +149,7 @@ it("keeps UI fallback with its complete canonical owners beside precise core cha
   for (const unrelated of [
     "test/scripts/pr-worktree-provision.test.ts",
     "test/scripts/pr-merge-recovery.test.ts",
-    "test/scripts/mobile-release-authority.test.ts",
+    "test/scripts/mobile-release-ci.test.ts",
   ]) {
     expect(toolingFiles, unrelated).not.toContain(unrelated);
   }

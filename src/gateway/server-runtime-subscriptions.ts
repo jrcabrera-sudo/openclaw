@@ -120,7 +120,10 @@ export function startGatewayEventSubscriptions(params: {
   getSessionRowProjection?: () => SessionRowProjection | undefined;
 }) {
   // Collection changes gate new work; the writer retains accepted work and maintenance.
-  const auditRecorder = createAuditEventRecorder({ getConfig: getRuntimeConfig });
+  const auditRecorder = createAuditEventRecorder({
+    getConfig: getRuntimeConfig,
+    scheduler: params.scheduler,
+  });
   const clearAuditSinks = [
     configureExecutionIdentityAdmissionSink(auditRecorder.recordExecutionIdentity),
     configureExecutionDecisionWorkSink(auditRecorder.recordExecutionDecisionWork),
@@ -311,7 +314,11 @@ export function startGatewayEventSubscriptions(params: {
             nodeSendToSession: params.nodeSendToSession,
             agentRunSeq: params.agentRunSeq,
             chatRunState: params.chatRunState,
-            resolveSessionKeyForRun,
+            resolveSessionKeyForRun: (runId, options) =>
+              resolveSessionKeyForRun(runId, {
+                ...options,
+                projection: params.getSessionRowProjection?.(),
+              }),
             clearAgentRunContext,
             toolEventRecipients: params.toolEventRecipients,
             sessionEventSubscribers: params.sessionEventSubscribers,
@@ -533,10 +540,10 @@ export function startGatewayEventSubscriptions(params: {
           // Context cleanup can precede a terminal event. Resolve its persisted
           // run mapping before the lazy chat handler consumes the same event.
           terminalPreparation = getSessionKeyModule().then(async ({ resolveSessionKeyForRun }) => {
-            const sessionKey = resolveSessionKeyForRun(
-              evt.runId,
-              sessionAgentId ? { agentId: sessionAgentId } : undefined,
-            );
+            const sessionKey = resolveSessionKeyForRun(evt.runId, {
+              agentId: sessionAgentId,
+              projection: params.getSessionRowProjection?.(),
+            });
             if (sessionKey) {
               await prepareTerminalPersistence(sessionKey);
             }

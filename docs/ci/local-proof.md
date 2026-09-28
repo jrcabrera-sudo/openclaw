@@ -14,6 +14,16 @@ without applying lint defaults to declaration preparation. Explicit Go settings
 remain inherited. Frozen revisions retain the workflow limits because their
 wrappers can predate this policy.
 
+Bounded core and eight-directory plugin lint shards can use two lint threads,
+four Go CPUs, `GOGC=100`, and an 8-GiB soft Go heap target on Linux CI. The batch
+owner must admit one child on at least four CPUs and 15 GiB of verified capacity;
+each child also requires 14 GiB of available memory for core or 10 GiB for plugins.
+The child verifies that its arguments match the admitted shard. Larger plugin
+chunks, unbounded commands, parallel children, and unknown memory keep their
+existing limits. Explicit thread and Go settings remain inherited. The larger
+heap target reduces repeated garbage collection without changing lint rules,
+target files, or declaration preparation.
+
 The runtime topology CI job also supplies `GOGC=30` and `GOMEMLIMIT=3GiB`
 defaults to `pnpm check:architecture`, preserving caller overrides. Both import
 cycle checks and the remaining architecture checks inherit these settings.
@@ -276,6 +286,12 @@ binary untouched. Provider readiness and broker authentication still determine
 which configured backend can run the proof.
 The check workflow hydrates its pinned dispatch commit with a depth-1 checkout;
 the changed gate later reconstructs the exact merge base and synced final tree.
+Dispatched check leases request `blacksmith-32vcpu-ubuntu-2404`. A native capacity
+probe measured eight CPUs and 30.95 GiB of memory on that class, compared with
+15.42 GiB on the previous 16-class. This supplies headroom for isolated runtime
+validation without increasing the number of jobs or workers. Workloads still
+admit work from observed resources; the runner label is not a capacity guarantee.
+PR hydration checks remain on `ubuntu-24.04`.
 Its outer GitHub job defaults to 240 minutes, matching the native full-test
 gate's four-hour Testbox lease envelope. Manual dispatches can override
 `timeout_minutes`; the lease TTL and individual test deadlines remain separate

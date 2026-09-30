@@ -1,10 +1,22 @@
 import { isChannelIngressReadCommand } from "../channels/message/ingress-queue-read-contract.js";
+import { isWorkspaceJournalReadCommand } from "../gateway/worker-environments/placement-workspace-journal.worker-contract.js";
 import type {
   OpenClawStateReadCommand,
   OpenClawStateReadRequest,
 } from "./openclaw-state-read.types.js";
 
 export function captureCommand(command: OpenClawStateReadCommand): OpenClawStateReadCommand {
+  if (isWorkspaceJournalReadCommand(command)) {
+    return command.type === "placementJournals.owners"
+      ? { ...command }
+      : { ...command, owner: { ...command.owner } };
+  }
+  if (command.type === "workerPlacements.changeSnapshot" && command.profileIds) {
+    return { ...command, profileIds: [...command.profileIds] };
+  }
+  if (command.type === "cron.scratch") {
+    return { ...command, selector: { ...command.selector } };
+  }
   if (command.type === "tui.lastSession.retiredPointers") {
     return { ...command, retiredSessionKeys: [...command.retiredSessionKeys] };
   }
@@ -22,6 +34,22 @@ export function captureCommand(command: OpenClawStateReadCommand): OpenClawState
   }
   if (command.type === "cron.jobNames") {
     return { ...command, jobIds: [...command.jobIds] };
+  }
+  if (command.type === "githubPublication.sharedObservation") {
+    return {
+      type: command.type,
+      input: {
+        ...command.input,
+        session: { ...command.input.session },
+        selector: { ...command.input.selector },
+        entry: {
+          ...command.input.entry,
+          ...(command.input.entry.worktree
+            ? { worktree: { ...command.input.entry.worktree } }
+            : {}),
+        },
+      },
+    };
   }
   if (command.type === "sessionRepositoryWorkspaces.find") {
     return {
@@ -161,7 +189,19 @@ export function captureCommand(command: OpenClawStateReadCommand): OpenClawState
 }
 
 function commandBytes(command: OpenClawStateReadRequest["command"]): number {
+  if (isWorkspaceJournalReadCommand(command)) {
+    return Buffer.byteLength(JSON.stringify(command), "utf8");
+  }
   let bytes = Buffer.byteLength(command.type, "utf8");
+  if (command.type === "cron.activeReceiptOwners") {
+    return bytes + Buffer.byteLength(command.agentId, "utf8");
+  }
+  if (command.type === "workerPlacements.changeSnapshot") {
+    return (command.profileIds ?? []).reduce(
+      (total, profileId) => total + Buffer.byteLength(profileId, "utf8"),
+      bytes,
+    );
+  }
   if (command.type === "tui.lastSession.read") {
     return bytes + Buffer.byteLength(command.stateKey, "utf8");
   }
@@ -197,6 +237,9 @@ function commandBytes(command: OpenClawStateReadRequest["command"]): number {
       (sum, id) => sum + Buffer.byteLength(id, "utf8"),
       bytes + Buffer.byteLength(command.storePath ?? "", "utf8"),
     );
+  }
+  if (command.type === "githubPublication.sharedObservation") {
+    return bytes + Buffer.byteLength(JSON.stringify(command.input), "utf8");
   }
   if (command.type === "sessionRepositoryWorkspaces.find") {
     return command.owners.reduce(
@@ -269,6 +312,18 @@ function commandBytes(command: OpenClawStateReadRequest["command"]): number {
         (proposal.queuedAtMs === undefined ? 0 : 8) +
         (proposal.runningAtMs === undefined ? 0 : 8),
       bytes + Buffer.byteLength(command.storeKey, "utf8"),
+    );
+  }
+  if (command.type === "cron.scratch") {
+    return (
+      bytes +
+      Buffer.byteLength(command.storeKey, "utf8") +
+      Buffer.byteLength(command.selector.kind, "utf8") +
+      (command.selector.kind === "job" ? 8 : 0) +
+      Buffer.byteLength(
+        command.selector.kind === "job" ? command.selector.jobId : command.selector.agentId,
+        "utf8",
+      )
     );
   }
   if (command.type === "devicePairing.bootstrapContext") {

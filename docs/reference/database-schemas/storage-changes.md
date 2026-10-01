@@ -628,9 +628,25 @@ before publishing the finished event and alert. A lost ordinary reply does not s
 those effects or replay the write; uncertain outcomes do not publish. A committed
 source retirement carries its exact identity through an operation failure so the
 stream owner can finish its conditional status write without replaying retirement.
-The original failure is still reported, and the final write retains its source checks. Other native
-scheduler transaction callers retain the shared row kernel and remain separate
-caller-migration work. No stored format, public method, or retention policy changes.
+The original failure is still reported, and the final write retains its source checks.
+No stored format, public method, or retention policy changes.
+
+Skipped-run outcomes, startup catch-up planning, and reservation cleanup use the
+same worker and synchronous row kernel. Native transactions combine current row
+markers and receipts with host activity and exact local reservation facts; the
+host rechecks those facts before granting commit. Startup receipt cleanup and
+deferred schedule comparisons remain atomic and preserve stored row order for
+staggering. Manual, scheduled, and startup cleanup keep their distinct missing-row
+and marker predicates. Captured caller and storage authority survive queue waits;
+committed completion can finish across a scheduler restart in the same store,
+without admitting new work for the retired generation. Cleanup retries require a
+known non-commit, and later startup cleanup cannot replay an earlier committed or
+uncertain reservation write. A committed skip keeps its original history attribution
+and notification default even if routing changes before completion; captured absence
+cannot adopt a newly configured recipient. Transport availability and alert-cycle
+checks still run at delivery and settlement. The synchronous service writer is removed; native
+transaction kernels remain inside their existing storage owners. Schemas, stored
+bytes, public contracts, retention, and installed-updater behavior are unchanged.
 
 Cron recovery observes each batch in one shared-state read-worker snapshot. Healthy
 live receipts need no writer admission. A missing receipt table uses its existing
@@ -669,6 +685,29 @@ are not migrated, and Doctor retains its existing schema checks and errors.
 Failed worker retirement or snapshot removal remains registered with the existing
 state lifecycle owner, so canonical cleanup can retry that same resource without
 replaying the read or releasing its pins prematurely.
+
+Direct Cron execution checks await the same read worker before dispatching a
+payload, sending a webhook, or publishing a script result. The worker reads the
+active receipt, current job, and requested agent-deletion facts in one read
+transaction. Each check retains the run's original database context, bypasses
+inherited discovery snapshots, and rechecks cancellation and the active marker
+before the effect. A reopened database cannot replace a retired run context.
+Missing receipt storage refuses execution without creating tables. Synchronous
+message-action and message-source guards retain their existing current-read
+owner; these finite awaited checks do not replace those later effect guards.
+
+Doctor awaits quarantined Cron rows through the shared-state read worker. The
+existing query order and payload decoder remain with the Cron store; captured
+source ownership, inherited snapshots, schema errors, and missing-database
+behavior come from the existing reader. Observing quarantine never creates or
+migrates storage. Standalone quarantine registration captures its original source
+and serializes the recovery records before awaiting the existing Cron writer.
+Doctor waits for that registration before archiving a legacy quarantine file;
+refusal or an uncertain write outcome leaves the file available for recovery.
+The same synchronous batch kernel remains inside full-store repair transactions.
+Legacy sequence ordering, first recovery timestamps, record identities, and
+retention are unchanged. Other Doctor fingerprint and metadata transaction hooks
+retain their native owner.
 
 iMessage outbound receipt recovery reads the external Messages SQLite database
 through the shared worker broker. Its plugin owns the read-only GUID queries;
@@ -2123,6 +2162,15 @@ not authorize writes: live caller admission and transaction-held session and
 cross-store catalog checks remain with the mutation owners. Process-local
 incognito databases retain their native owner. Schema, stored bytes, retention,
 and update behavior are unchanged.
+
+Upstream session monitoring uses its scheduler scope to cancel future probes and
+join accepted work. Session reads use the existing read worker; event recording
+and marker settlement revalidate the idle session at transaction and commit
+admission. The shared-state worker compares the complete scanned upstream link
+before advancing its marker or removing a missing source. Durable event insertion
+or deduplication still precedes marker settlement. Failed event recording leaves
+the marker available for the next probe. Schemas, stored bytes, retention, provider
+contracts, and update behavior are unchanged; no migration is required.
 
 ## Review checkpoint for material changes
 

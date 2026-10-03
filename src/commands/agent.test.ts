@@ -55,7 +55,6 @@ import { emitAgentEvent, onAgentEvent, resetAgentEventsForTest } from "../infra/
 import { buildOutboundBaseSessionKey } from "../infra/outbound/base-session-key.js";
 import { withTempHomeCore as withTempHomeBase } from "../plugin-sdk/test-helpers/temp-home.js";
 import { loadEnabledClaudeBundleCommands } from "../plugins/bundle-commands.js";
-import { resolveProviderPolicySurface } from "../plugins/provider-public-artifacts.js";
 import type { PluginProviderRegistration } from "../plugins/registry.test-fixtures.js";
 import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../plugins/runtime.js";
 import type { RuntimeEnv } from "../runtime.js";
@@ -81,13 +80,13 @@ import { getAgentAttemptExecutionMocks } from "./agent-command-state.test-mocks.
 import {
   createDefaultAgentResult,
   expectOwnedCommandSession,
-  expectSqliteSessionFileMarker,
   readSessionStore,
   useRealCommandSessionPersistence,
   writeSessionStoreSeed,
 } from "./agent-session.test-support.js";
 import { agentCommand, agentCommandFromIngress } from "./agent.js";
 import { registerAgentReplyPolicyTests } from "./agent.reply-policy.test-support.js";
+import { registerAgentThinkingTests } from "./agent.thinking.test-support.js";
 import { createThrowingTestRuntime } from "./test-runtime-config-helpers.js";
 
 const configIoMocks = vi.hoisted(() => ({
@@ -260,37 +259,6 @@ vi.mock("../agents/command/delivery.runtime.js", () => {
           }
         }
         return deliveryResult;
-      },
-    ),
-  };
-});
-
-vi.mock("../config/sessions/transcript-resolve.runtime.js", () => {
-  return {
-    resolveSessionTranscriptFile: vi.fn(
-      async (params: {
-        sessionId: string;
-        sessionKey: string;
-        sessionEntry?: { sessionFile?: string; sessionId?: string };
-        sessionStore?: Record<string, { sessionFile?: string; sessionId?: string }>;
-        storePath?: string;
-        agentId: string;
-        threadId?: string | number;
-      }) => {
-        const sessionFile =
-          params.sessionEntry?.sessionFile ??
-          `sqlite:${params.agentId}:${params.sessionId}:${params.storePath ?? ""}`;
-        let sessionEntry = params.sessionEntry;
-        if (params.sessionStore && params.sessionKey) {
-          const existingEntry = params.sessionStore[params.sessionKey] ?? {};
-          sessionEntry = {
-            ...existingEntry,
-            sessionId: params.sessionId,
-            sessionFile,
-          };
-          params.sessionStore[params.sessionKey] = sessionEntry;
-        }
-        return { sessionFile, sessionEntry };
       },
     ),
   };
@@ -1715,101 +1683,7 @@ describe("agentCommand", () => {
     });
   });
 
-  it("validates an unconfigured model against manifest thinking capabilities without live discovery", async () => {
-    await withTempHome(async (home) => {
-      mockConfig(home, path.join(home, "sessions.json"), { models: {} });
-      vi.mocked(loadManifestModelCatalog).mockReturnValue([
-        {
-          provider: "reasoning-test",
-          id: "catalog-max",
-          name: "Catalog reasoning model",
-          api: "openai-completions",
-          reasoning: true,
-          compat: { supportedReasoningEfforts: ["max"] },
-        },
-      ]);
-
-      await agentCommand(
-        {
-          message: "ping",
-          to: "+1222",
-          model: "reasoning-test/catalog-max",
-          thinking: "max",
-        },
-        runtime,
-      );
-
-      expect(getLastEmbeddedCall()?.thinkLevel).toBe("max");
-      expect(readPreparedModelCatalog).not.toHaveBeenCalled();
-    });
-  });
-
-  it.each(["off", "max"] as const)(
-    "validates native %s against observed capabilities despite manifest reasoning",
-    async (thinking) => {
-      await withTempHome(async (home) => {
-        mockConfig(home, path.join(home, "sessions.json"), {
-          model: { primary: "openai/account-reasoner" },
-          models: { "openai/account-reasoner": {} },
-        });
-        const registry = createTestRegistry();
-        registry.providers.push({
-          pluginId: "openai",
-          source: "test",
-          provider: {
-            id: "openai",
-            label: "OpenAI",
-            auth: [],
-            resolveThinkingProfile: expectDefined(
-              resolveProviderPolicySurface("openai")?.resolveThinkingProfile,
-              "OpenAI thinking policy",
-            ),
-          },
-        });
-        setActivePluginRegistry(registry);
-        vi.mocked(loadManifestModelCatalog).mockReturnValue([
-          {
-            provider: "openai",
-            id: "account-reasoner",
-            name: "Catalog reasoning model",
-            api: "openai-chatgpt-responses",
-            reasoning: true,
-            compat: { supportedReasoningEfforts: ["none", "high", "max"] },
-          },
-        ]);
-        vi.mocked(resolveEffectiveAgentRuntime).mockReturnValue("codex");
-        vi.mocked(loadProviderScopedThinkingCatalog).mockResolvedValue([
-          {
-            provider: "openai",
-            id: "account-reasoner",
-            name: "Native reasoning model",
-            nativeRuntime: "codex",
-            reasoning: true,
-            compat: { supportedReasoningEfforts: ["high"] },
-          },
-        ]);
-
-        await expect(
-          agentCommand(
-            { message: "ping", to: "+1222", model: "openai/account-reasoner", thinking },
-            runtime,
-          ),
-        ).rejects.toThrow(
-          `Thinking level "${thinking}" is not supported for openai/account-reasoner.`,
-        );
-
-        expect(loadProviderScopedThinkingCatalog).toHaveBeenCalledWith(
-          expect.objectContaining({
-            provider: "openai",
-            model: "account-reasoner",
-            agentRuntime: "codex",
-          }),
-        );
-        expect(runEmbeddedAgent).not.toHaveBeenCalled();
-        expect(readPreparedModelCatalog).not.toHaveBeenCalled();
-      });
-    },
-  );
+  registerAgentThinkingTests({ withTempHome, mockConfig, getLastEmbeddedCall, runtime });
 
   it("bypasses ACP sessions for one-shot model runs", async () => {
     await withTempHome(async (home) => {
@@ -1897,7 +1771,7 @@ describe("agentCommand", () => {
 
   registerAgentReplyPolicyTests({ withTempHome, mockConfig, runtime });
 
-  it("passes resolved session-id resume files to embedded runs", async () => {
+  it("passes resolved session-id routing context to embedded runs", async () => {
     await withTempHome(async (home) => {
       const resumeStore = path.join(home, "sessions-resume.json");
       await writeSessionStoreSeed(resumeStore, {
@@ -1916,10 +1790,17 @@ describe("agentCommand", () => {
 
       const callArgs = getLastEmbeddedCall();
       expect(callArgs?.sessionId).toBe("session-123");
-      expectSqliteSessionFileMarker({
+      expect(callArgs).toMatchObject({
         agentId: "main",
-        sessionFile: callArgs?.sessionFile,
+        sessionKey: "agent:main:foo",
+        sessionFile: "agent:main:foo",
+      });
+      expect(
+        vi.mocked(attemptExecutionRuntime.runAgentAttempt).mock.calls.at(-1)?.[0].sessionTarget,
+      ).toEqual({
+        agentId: "main",
         sessionId: "session-123",
+        sessionKey: "agent:main:foo",
         storePath: resumeStore,
       });
     });
@@ -2462,9 +2343,17 @@ describe("agentCommand", () => {
       );
       let callArgs = getLastEmbeddedCall();
       expect(callArgs?.sessionKey).toBe("agent:ops:main");
-      expectSqliteSessionFileMarker({
+      expect(callArgs?.sessionId).toBeTruthy();
+      expect(callArgs).toMatchObject({
         agentId: "ops",
-        sessionFile: callArgs?.sessionFile,
+        sessionFile: "agent:ops:main",
+      });
+      expect(
+        vi.mocked(attemptExecutionRuntime.runAgentAttempt).mock.calls.at(-1)?.[0].sessionTarget,
+      ).toEqual({
+        agentId: "ops",
+        sessionId: callArgs?.sessionId,
+        sessionKey: "agent:ops:main",
         storePath: store,
       });
       expect(callArgs?.messageChannel).toBe("slack");
@@ -2578,9 +2467,14 @@ describe("agentCommand", () => {
       let callArgs = getLastEmbeddedCall();
       expect(callArgs?.agentId).toBe("ops");
       expect(callArgs?.sessionKey).toBe("agent:ops:incident-42");
-      expectSqliteSessionFileMarker({
+      expect(callArgs?.sessionId).toBeTruthy();
+      expect(callArgs?.sessionFile).toBe("agent:ops:incident-42");
+      expect(
+        vi.mocked(attemptExecutionRuntime.runAgentAttempt).mock.calls.at(-1)?.[0].sessionTarget,
+      ).toEqual({
         agentId: "ops",
-        sessionFile: callArgs?.sessionFile,
+        sessionId: callArgs?.sessionId,
+        sessionKey: "agent:ops:incident-42",
         storePath: store,
       });
 
@@ -2597,9 +2491,14 @@ describe("agentCommand", () => {
         const sessionId = expectDefined(callArgs?.sessionId, "embedded session id");
         expect(callArgs?.agentId).toBe("ops");
         expect(callArgs?.sessionKey).toBe(sessionKey);
-        expectSqliteSessionFileMarker({
+        expect(sessionId).toBeTruthy();
+        expect(callArgs?.sessionFile).toBe(sessionKey);
+        expect(
+          vi.mocked(attemptExecutionRuntime.runAgentAttempt).mock.calls.at(-1)?.[0].sessionTarget,
+        ).toEqual({
           agentId: "ops",
-          sessionFile: callArgs?.sessionFile,
+          sessionId,
+          sessionKey,
           storePath: store,
         });
         expectOwnedCommandSession({
@@ -2696,9 +2595,14 @@ describe("agentCommand", () => {
         const sessionId = expectDefined(callArgs?.sessionId, "embedded session id");
         expect(callArgs?.agentId).toBe("ops");
         expect(callArgs?.sessionKey).toBe(sessionKey);
-        expectSqliteSessionFileMarker({
+        expect(sessionId).toBeTruthy();
+        expect(callArgs?.sessionFile).toBe(sessionKey);
+        expect(
+          vi.mocked(attemptExecutionRuntime.runAgentAttempt).mock.calls.at(-1)?.[0].sessionTarget,
+        ).toEqual({
           agentId: "ops",
-          sessionFile: callArgs?.sessionFile,
+          sessionId,
+          sessionKey,
           storePath: store,
         });
         expectOwnedCommandSession({

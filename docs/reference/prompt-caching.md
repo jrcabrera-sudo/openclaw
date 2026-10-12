@@ -39,6 +39,26 @@ the session and keep both stable. Start a new session for a planned change.
 Invalidating reuse means the next request misses that cached state; it does not
 necessarily delete the provider's older cache entry before its normal expiry.
 
+## Keep replayed tool results stable
+
+OpenClaw applies the same tool-result text cap before the first model request
+and when persisting the result. Subsequent turns therefore replay the same
+bounded text instead of introducing a different truncation notice. Redaction
+still runs before model-visible output is recorded. Large batches can exceed
+the aggregate result budget when reducing them would rewrite already-sent
+history; session pruning and compaction remain the owners of intentional
+history changes.
+
+OpenAI Chat Completions also preserves valid native tool-call IDs during replay
+and disambiguates repeated IDs deterministically. Changing result text or IDs
+between turns can invalidate an otherwise reusable provider prefix. Stable
+request inputs support cache reuse; actual hits still depend on the provider.
+
+Internal browser conversations reuse their opaque session cache key for private
+subagent completions, so the completion does not switch to a different affinity
+key between chat turns. The key remains scoped to the agent, provider, model,
+and conversation and does not expose the conversation identifier.
+
 ## Primary knobs
 
 ### Worker turns
@@ -333,6 +353,14 @@ agents:
 
 OpenClaw runs one combined live cache regression gate covering repeated prefixes, tool turns, image turns, MCP-style tool transcripts, and an Anthropic no-cache control.
 
+Full Release Validation's `live-cache` suite also checks serialized transport
+prefixes and real agent turns across instruction refresh, prompt hooks, and
+persisted-session reopen. Offline coverage includes authenticated Gateway chat
+around a spawned child's private completion and an in-process server stop/start, without
+restarting the OS process. See
+[Prompt-cache regression coverage](/help/testing/suites#prompt-cache-regression-coverage)
+for the exact boundaries, commands, and estimated cost.
+
 - `src/agents/live-cache-regression.live.test.ts`
 - `src/agents/test-helpers/live-cache-regression-runner.ts`
 - `src/agents/live-cache-regression-baseline.ts`
@@ -418,7 +446,7 @@ For encoded provider requests, `providerPrefix` compares the serialized instruct
 
 A `continuation:` prefix means either request used `previous_response_id`. Its `wire-input` items are deltas, so differences between them do not establish rewritten conversation history. Compare the separate `historyRewrite` signal and the changed request parameters before attributing a cache miss. A matching full-history wire prefix also does not guarantee a hit: OpenAI must find an available matching cache boundary.
 
-OpenClaw also checks that each converted request history extends the previous request in the same session. An undeclared edit, removal, or reorder records `historyRewrite` and warns once for the session. The diagnostic names bounded changed fields (such as `timestamp`, `__openclaw`, or `content[0]`) without logging their values; fields outside the diagnostic limit are grouped. Set `OPENCLAW_PROMPT_CACHE_ASSERT=1` to throw at the first differing message during development or tests. Compaction, pruning, transient runtime-context removal, and image cleanup declare their rewrites as `compaction`, `pruning`, `runtimeContextCarrier`, and `imageCleanup`; model, transport, or retention changes start a new history series. Content-block fingerprints reuse hashes only while every primitive property still matches; unchanged large text and image data are not hashed again. Nested block values and message envelopes are checked on every observation, so in-place edits are detected even when wrappers or content arrays are reused. String-content hashes live with the bounded history baseline. Provider-owned tool schema declarations are fingerprinted once per object identity.
+OpenClaw also checks that each converted request history extends the previous request in the same session. An undeclared edit, removal, or reorder records `historyRewrite` and warns once for the session. The diagnostic names bounded changed fields (such as `timestamp`, `__openclaw`, or `content[0]`) without logging their values; fields outside the diagnostic limit are grouped. Set `OPENCLAW_PROMPT_CACHE_ASSERT=1` to throw at the first differing message during development or tests. Compaction, pruning, and transient runtime-context removal declare their rewrites as `compaction`, `pruning`, and `runtimeContextCarrier`; model, transport, or retention changes start a new history series. Image blocks and attachment references remain in retained history instead of being replaced by age-based cleanup markers. Content-block fingerprints reuse hashes only while every primitive property still matches; unchanged large text and image data are not hashed again. Nested block values and message envelopes are checked on every observation, so in-place edits are detected even when wrappers or content arrays are reused. String-content hashes live with the bounded history baseline. Provider-owned tool schema declarations are fingerprinted once per object identity.
 
 - Cache trace events are JSONL with staged snapshots like `session:loaded`, `prompt:before`, `stream:context`, and `session:after`.
 - Per-turn cache token impact is visible in normal usage surfaces: `cacheRead` and `cacheWrite` show up in `/usage tokens`, `/status`, session usage summaries, and custom `messages.usageTemplate` layouts.

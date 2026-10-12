@@ -1,6 +1,5 @@
 import type { BuildSessionEntryOptions } from "../../../packages/memory-host-sdk/src/host/session-files.js";
 import type { BoardReadOperations } from "../../boards/sqlite-board-operations.js";
-import type { SessionCostUsageCacheRead } from "../../infra/session-cost-usage-cache-read.js";
 import type { DatabaseFileIdentity } from "../../infra/sqlite-worker-identity.js";
 import type { UserTurnTranscriptAdmissionReceipt } from "../../sessions/user-turn-transcript.types.js";
 import type { OpenClawRegisteredAgentDatabase } from "../../state/openclaw-agent-db-contract.js";
@@ -19,6 +18,12 @@ import type {
   SessionTranscriptRuntimeTarget,
 } from "./session-accessor.types.js";
 import type {
+  SessionEntryCurrentFacts,
+  SessionEntryCurrentSource,
+} from "./session-entry-current.types.js";
+import type { CapturedSessionEntryReadSource } from "./session-entry-read-source.types.js";
+import type { SessionEntryReadWorkerInput } from "./session-entry-read.types.js";
+import type {
   SessionModelContextLimits,
   SessionTranscriptEventMatch,
 } from "./session-history-read.types.js";
@@ -26,6 +31,17 @@ import type { SessionTranscriptAnchorSelection } from "./session-transcript-anch
 import type { SessionTranscriptAnchorEntry } from "./session-transcript-anchor-read.types.js";
 import type { SessionTranscriptSearchParams } from "./session-transcript-search.types.js";
 import type { TranscriptEntryAnchor } from "./transcript-entry-anchor.js";
+
+export type SessionEntryCurrentWorkerInput = Omit<SessionEntryReadWorkerInput, "kind"> & {
+  kind: "session-entry-current";
+  source?: SessionEntryCurrentSource;
+};
+
+export type SessionEntryCurrentWorkerResult = {
+  kind: "session-entry-current";
+  entry: SessionEntryCurrentFacts | undefined;
+  source?: CapturedSessionEntryReadSource & { databaseIdentity: string };
+};
 
 type BoardReadWorkerInput<Kind extends string, Operation extends keyof BoardReadOperations> = {
   kind: Kind;
@@ -159,13 +175,6 @@ export type VoiceSessionsWorkerInput = {
   kind: "voice-sessions";
   database: { agentId: string; path: string };
   request: VoiceSessionLookup;
-  env: NodeJS.ProcessEnv;
-};
-
-export type SessionUsageCacheWorkerInput = {
-  kind: "usage-cache";
-  database: { agentId: string; path: string };
-  request: SessionCostUsageCacheRead;
   env: NodeJS.ProcessEnv;
 };
 

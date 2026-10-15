@@ -18,7 +18,6 @@ import { defineValidatedGatewayHandler } from "../../server-methods/validation.j
 import { resolveSessionMutationAuthorizationAsync } from "../../session-sharing-authorization-async.js";
 import { captureSessionMutationRouting } from "../../session-sharing-preparation.js";
 import { formatForLog } from "../../ws-log.js";
-import { assertTalkSessionStorageTarget } from "../session-target.js";
 import {
   completeTalkVoiceChange,
   readTalkVoiceSelection,
@@ -89,6 +88,7 @@ async function resolveVoiceCaller(
     return {
       kind: "managed" as const,
       managed,
+      [Symbol.dispose]: () => authorization?.release?.(),
       assertCurrent: () => {
         assertCallerCurrent();
         managed.assertCurrent();
@@ -131,18 +131,19 @@ async function resolveVoiceCaller(
     throw new Error("The agent may only select the voice of its own call");
   }
   // Resolve the server-owned call before capturing session participation authority.
-  assertTalkSessionStorageTarget(context.getRuntimeConfig(), session.sessionTarget);
-  const authorization = await authorizeSession(
-    session.sessionTarget.agentId,
-    session.sessionTarget.canonicalKey,
-  );
+  session.sessionTarget.assertCurrent(context.getRuntimeConfig());
   const assertRoutingCurrent = captureSessionMutationRouting(
     context.getRuntimeConfig(),
     () => new Error("Talk session storage target changed; retry the request"),
     [session.sessionTarget],
   );
+  const authorization = await authorizeSession(
+    session.sessionTarget.agentId,
+    session.sessionTarget.canonicalKey,
+  );
   return {
     kind: "browser" as const,
+    [Symbol.dispose]: () => authorization?.release?.(),
     session,
     connId,
     assertCurrent: composeSessionSourceAssertion(
@@ -161,7 +162,7 @@ export const talkVoiceHandlers: GatewayRequestHandlers = {
     validateTalkVoiceGetParams,
     async (options) => {
       const { params, respond } = options;
-      const caller = await resolveVoiceCaller(options, params);
+      using caller = await resolveVoiceCaller(options, params);
       caller.assertCurrent();
       const selection =
         caller.kind === "managed" ? caller.managed.read() : readTalkVoiceSelection(caller.session);
@@ -174,7 +175,7 @@ export const talkVoiceHandlers: GatewayRequestHandlers = {
     validateTalkVoiceSetParams,
     async (options) => {
       const { params, respond, context } = options;
-      const caller = await resolveVoiceCaller(options, params);
+      using caller = await resolveVoiceCaller(options, params);
       const result = await (caller.kind === "managed"
         ? caller.managed.changeVoice(params.voice, {
             assertCurrent: caller.assertCurrent,

@@ -39,7 +39,7 @@ export async function runUpdateStateInspectionWorker(params: {
   timeoutMs?: number;
   readOnlySource?: string;
   sources?: readonly string[];
-  ioBudget?: "probe" | "deadline";
+  ioBudget?: "deadline";
   /** Best-effort callers continue after failure and compose their own guidance. */
   retryAdvice?: boolean;
 }) {
@@ -90,6 +90,7 @@ export async function runUpdateStateInspectionWorker(params: {
             ? undefined
             : JSON.stringify({
                 ...params.input,
+                includeLocalStoreVersions: true,
                 env: {
                   HOME: params.sourceEnv.HOME,
                   OPENCLAW_HOME: params.sourceEnv.OPENCLAW_HOME,
@@ -126,8 +127,6 @@ export async function runUpdateStateInspectionWorker(params: {
                 ),
                 timeoutMs,
                 signal: params.signal,
-                nodeRunner: params.nodeRunner,
-                env: params.sourceEnv,
               },
               run,
             ),

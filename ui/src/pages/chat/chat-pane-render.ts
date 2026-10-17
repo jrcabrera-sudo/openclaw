@@ -1,4 +1,3 @@
-import { html, nothing } from "lit";
 import { resolveArtifactDownloadSource } from "../../api/artifact-download.ts";
 import { resolveControlUiAuthToken } from "../../app/control-ui-auth.ts";
 import { gatewayPresentationScope } from "../../app/gateway-presentation-scope.ts";
@@ -20,7 +19,7 @@ import {
 import { hasSessionPresenceViewers } from "../../lib/presence-users.ts";
 import { projectsForGateway } from "../../lib/projects.ts";
 import { parseCatalogSessionKey } from "../../lib/sessions/catalog-key.ts";
-import { GitHubPublicationController } from "../../lib/sessions/github-publication-controller.ts";
+import { GitHubPublicationOwner } from "../../lib/sessions/github-publication-owner.ts";
 import { scopedAgentParamsForSession } from "../../lib/sessions/index.ts";
 import { resolveUiConfiguredMainKey } from "../../lib/sessions/session-key.ts";
 import { navigateToModelProvider } from "../model-providers/navigation.ts";
@@ -51,7 +50,7 @@ import {
   resolveChatPaneFollowUpMode,
   projectChatPaneTranscript,
 } from "./chat-pane-state.ts";
-import { ChatProviderReviewController } from "./chat-provider-review-controller.tsx";
+import type { ChatProviderReviewOwner } from "./chat-provider-review-controller.tsx";
 import { createChatQuestionActions } from "./chat-question-actions.ts";
 import { dismissRealtimeTalkError } from "./chat-realtime.ts";
 import { activeChatRunStartupStatus } from "./chat-run-startup.ts";
@@ -63,7 +62,6 @@ import {
   selectedChatSessionRow,
 } from "./chat-state-route.ts";
 import type { ChatProps } from "./chat-view.tsx";
-import { getChatComposerState } from "./components/chat-composer-state.ts";
 import { openSessionWorkspaceFile } from "./components/chat-session-workspace.ts";
 import { resolveChatLinkFaviconFetcher } from "./link-favicon-loader.ts";
 import { chatFailureRunId, hasAbortableSessionRun, hasDirectSessionRun } from "./run-lifecycle.ts";
@@ -71,16 +69,21 @@ import { lockChatScroll, scheduleChatScroll } from "./scroll.ts";
 import { resolveChatProjectionRunId } from "./tool-stream-status.ts";
 import { workspaceResultConflictFromPlacement } from "./workspace-conflict.ts";
 
-const bootLayout = html`<main class="app-shell app-shell--booting" aria-busy="true"></main>`;
-
 export class ChatPaneRuntime extends ChatPaneLayoutRender {
-  private readonly notify = () => this.requestUpdate();
-  readonly providerReview = new ChatProviderReviewController(this, () => this.state, this.notify);
+  private readonly notify = () => this.invalidate();
 
-  render() {
+  get realtimeTalk() {
+    return this.state?.realtimeTalk;
+  }
+
+  readState() {
+    return this.state;
+  }
+
+  render(readProviderReview?: () => ChatProviderReviewOwner) {
     const state = this.state;
     if (!state) {
-      return { layout: bootLayout, capabilityDialogs: undefined };
+      return { layout: null, capabilityDialogs: undefined, providerReviewSource: undefined };
     }
     const selectionConnectionGeneration = this.connectionGeneration;
     const selectedSession = selectedChatSessionRow(state);
@@ -170,7 +173,6 @@ export class ChatPaneRuntime extends ChatPaneLayoutRender {
       placementStartup !== null,
     );
     const canWriteProgressCard = state.connected && !sessionParticipationBlocked && hasWriteScope;
-    this.providerReview.sync(canWriteProgressCard && !selectedSessionArchived);
     const restartRecoveryTombstoned = selectedSession?.restartRecoveryStatus === "tombstoned";
     const multiIdentity = this.hasMultipleIdentities();
     const suggestionViewer =
@@ -201,8 +203,10 @@ export class ChatPaneRuntime extends ChatPaneLayoutRender {
       );
     // Avoid flashing view-only while metadata loads; failed lookups still explain the gate.
     const catalogDisabledReason =
-      catalogKey && !this.catalogLoading && this.catalogSession?.canContinue !== true
-        ? this.catalogHost?.kind === "node"
+      catalogKey &&
+      !this.history.catalogLoading &&
+      this.history.catalogSession?.canContinue !== true
+        ? this.history.catalogHost?.kind === "node"
           ? t("chat.catalog.remoteViewOnly")
           : t("chat.catalog.unsupportedViewOnly")
         : null;
@@ -231,7 +235,7 @@ export class ChatPaneRuntime extends ChatPaneLayoutRender {
       queue: state.chatQueue,
     });
     const historyHasMore = catalogKey
-      ? Boolean(this.catalogCursor)
+      ? Boolean(this.history.catalogCursor)
       : state.chatHistoryPagination.hasMore;
     const sessionActionCallbacks = createChatPaneSessionActionCallbacks({
       getSnapshot: () => this.context.gateway.snapshot,
@@ -265,7 +269,6 @@ export class ChatPaneRuntime extends ChatPaneLayoutRender {
             navigateToModelProvider(this.context, currentAgentId, provider),
           onModelAccounts: () => this.context.navigate("profile"),
         });
-    const composerState = getChatComposerState(this.presentationId);
     const projectCatalog = projectsForGateway(this.context.gateway).snapshot;
     const publicationScope = this.captureConnectionScope();
     const readPublicationRow = () => {
@@ -293,7 +296,7 @@ export class ChatPaneRuntime extends ChatPaneLayoutRender {
         this.githubPublication = this.context.sessions.githubPublication.attach(
           publicationRow,
           this.notify,
-          GitHubPublicationController,
+          GitHubPublicationOwner,
         );
       }
       const publication = this.githubPublication;
@@ -330,7 +333,7 @@ export class ChatPaneRuntime extends ChatPaneLayoutRender {
       !providerPaused &&
       sessionDisabledBanner?.kind !== "composer-replacement" &&
       (catalogKey
-        ? this.catalogSession?.canContinue === true
+        ? this.history.catalogSession?.canContinue === true
         : !disabledReason &&
           !(selectedSessionArchived || restartRecoveryTombstoned || placementComposer.blocksSend));
     const composerAvailability = {
@@ -380,7 +383,7 @@ export class ChatPaneRuntime extends ChatPaneLayoutRender {
       // Recovery can temporarily withhold the first turn after history loaded empty.
       // Keep its pane loading until startup can display the retained message again.
       loading: catalogKey
-        ? this.catalogLoading
+        ? this.history.catalogLoading
         : (!state.connected && !state.currentSessionId) ||
           state.chatLoading ||
           (!runActive && pendingReason !== null && placementStartup === null),
@@ -404,8 +407,7 @@ export class ChatPaneRuntime extends ChatPaneLayoutRender {
       compactionStatus: state.compactionStatus,
       fallbackStatus: state.fallbackStatus,
       providerPolicyNotice: catalogKey ? null : state.providerPolicyNotice,
-      providerReview: this.providerReview,
-      providerReviewRevision: {},
+      readProviderReview,
       progressCard: progressPresentation?.card ?? null,
       progressCardIdentity: progressPresentation?.identity,
       progressCardLifetime: progressPresentation?.lifetime,
@@ -437,18 +439,25 @@ export class ChatPaneRuntime extends ChatPaneLayoutRender {
         isCurrent: () => this.state === state,
       }),
       historyPagination:
-        historyHasMore || this.loadingOlder
+        historyHasMore || this.history.loadingOlder
           ? {
               hasMore: historyHasMore,
-              loading: this.loadingOlder || (catalogKey ? this.catalogLoading : state.chatLoading),
+              loading:
+                this.history.loadingOlder ||
+                (catalogKey ? this.history.catalogLoading : state.chatLoading),
               onShowEarlier: () => void this.loadOlderMessages(),
             }
           : undefined,
-      ...projectChatPaneTranscript(state, catalog ? this.catalogMessages : null, projectionRunId),
+      ...projectChatPaneTranscript(
+        state,
+        catalog ? this.history.catalogMessages : null,
+        projectionRunId,
+      ),
       assistantAvatarUrl: resolveChatAvatarUrl(state),
       sendShortcut: state.settings.chatSendShortcut,
       followUpMode: state.chatFollowUpMode,
       draft: state.chatMessage,
+      draftSource: this.chatState.composerDraft,
       composerPredictions: {
         enabled: this.context.config.current.composerPredictionsEnabled === true,
         active: !catalogKey && this.active && this.presented,
@@ -469,17 +478,18 @@ export class ChatPaneRuntime extends ChatPaneLayoutRender {
       modelCatalog: state.chatModelCatalog,
       modelSwitching: Boolean(state.chatModelSwitchPromises[state.sessionKey]),
       queue: state.chatQueue,
-      realtimeTalkActive: state.realtimeTalkActive,
-      realtimeTalkStatus: state.realtimeTalkStatus,
-      realtimeTalkDetail: state.realtimeTalkDetail,
-      realtimeTalkInputNotice: state.realtimeTalkInputNotice,
-      realtimeTalkInputLevel: state.realtimeTalkInputLevel,
-      realtimeTalkConversation: state.realtimeTalkConversationState.entries,
-      realtimeTalkVideoStream: state.realtimeTalkVideoStream,
-      realtimeTalkCameraDevices: state.realtimeTalkCameraDevices,
-      realtimeTalkVideoCapable: state.realtimeTalkVideoCapable,
-      realtimeTalkVideoPending: state.realtimeTalkVideoPending,
-      realtimeTalkCameraError: state.realtimeTalkCameraError,
+      getQueue: () => state.chatQueue,
+      realtimeTalkActive: state.realtimeTalk.snapshot.realtimeTalkActive,
+      realtimeTalkStatus: state.realtimeTalk.snapshot.realtimeTalkStatus,
+      realtimeTalkDetail: state.realtimeTalk.snapshot.realtimeTalkDetail,
+      realtimeTalkInputNotice: state.realtimeTalk.snapshot.realtimeTalkInputNotice,
+      realtimeTalkInputLevel: state.realtimeTalk.snapshot.realtimeTalkInputLevel,
+      realtimeTalkConversation: state.realtimeTalk.snapshot.realtimeTalkConversationState.entries,
+      realtimeTalkVideoStream: state.realtimeTalk.snapshot.realtimeTalkVideoStream,
+      realtimeTalkCameraDevices: state.realtimeTalk.snapshot.realtimeTalkCameraDevices,
+      realtimeTalkVideoCapable: state.realtimeTalk.snapshot.realtimeTalkVideoCapable,
+      realtimeTalkVideoPending: state.realtimeTalk.snapshot.realtimeTalkVideoPending,
+      realtimeTalkCameraError: state.realtimeTalk.snapshot.realtimeTalkCameraError,
       connected: state.connected,
       offline: gatewaySnapshot.offlineStable,
       gatewayClient: state.client,
@@ -522,7 +532,7 @@ export class ChatPaneRuntime extends ChatPaneLayoutRender {
                 selectedSession.key,
                 visibleWorkspaceConflict.stagedResultRef,
               );
-              this.requestUpdate();
+              this.invalidate();
             }
           : undefined,
       sessions: state.sessionsResult,
@@ -530,16 +540,7 @@ export class ChatPaneRuntime extends ChatPaneLayoutRender {
       toolOverrides: selectedSession?.toolOverrides,
       capabilityMenu: catalogKey
         ? undefined
-        : this.composerCapabilities.props(
-            this.context,
-            state,
-            selectedSession,
-            currentAgentId,
-            composerState.capabilityMenuView.startsWith("tools:"),
-            composerState.capabilityMenuOpen &&
-              (composerState.capabilityMenuView === "skills" ||
-                composerState.capabilityMenuView.startsWith("library:")),
-          ),
+        : this.composerCapabilities.props(this.context, state, selectedSession, currentAgentId),
       ...childRoster,
       sessionHost: {
         assistantAgentId: state.assistantAgentId,
@@ -550,7 +551,7 @@ export class ChatPaneRuntime extends ChatPaneLayoutRender {
         basePath: state.basePath,
         modelAuthStatusResult: state.modelAuthStatusResult,
       },
-      composerControls: composerControls?.composerControls ?? nothing,
+      composerControls: composerControls?.composerControls,
       permissionPicker: composerControls?.permissionPicker,
       ...this.suggestionChatProps(state.connected, selectedSessionArchived, multiIdentity),
       messageReactions: this.messageReactions,
@@ -581,6 +582,7 @@ export class ChatPaneRuntime extends ChatPaneLayoutRender {
       onAssistantAttachmentLoaded: () => scheduleChatScroll(state),
       getDraft: () => state.chatMessage,
       onRequestUpdate: state.requestUpdate,
+      mediaOwner: state,
       onHistoryKeydown: state.handleChatInputHistoryKey,
       onSlashIntent: () => refreshChatCommands(state),
       onSlashCommand: nativeConversation
@@ -604,7 +606,8 @@ export class ChatPaneRuntime extends ChatPaneLayoutRender {
         latestFailedRunId: () =>
           chatFailureRunId(state.chatRunError, selectedChatSessionRow(state)),
       }),
-      onUseSystemDefaultMicrophone: state.realtimeTalkUseSystemDefault ?? undefined,
+      onUseSystemDefaultMicrophone:
+        state.realtimeTalk.snapshot.realtimeTalkUseSystemDefault ?? undefined,
       onToggleRealtimeTalk: () => (providerPaused ? undefined : void state.toggleRealtimeTalk()),
       onToggleRealtimeCamera: () => void state.toggleRealtimeTalkCamera(),
       onSwitchRealtimeCamera: () => void state.switchRealtimeTalkCamera(),
@@ -614,13 +617,11 @@ export class ChatPaneRuntime extends ChatPaneLayoutRender {
       },
       onDismissRealtimeTalkError: () => {
         dismissRealtimeTalkError(state);
-        state.requestUpdate?.();
       },
       onDismissRealtimeTalkInputNotice: () => {
-        state.realtimeTalkInputNotice = null;
-        state.requestUpdate?.();
+        state.realtimeTalk.update({ realtimeTalkInputNotice: null });
       },
-      onAbort: sessionActionCallbacks.onAbort,
+      ...sessionActionCallbacks,
       onQueueRemove: state.removeQueuedMessage,
       onQueueRetry: providerPaused ? undefined : (id) => void state.retryQueuedChatMessage(id),
       onQueueSteer:
@@ -650,7 +651,6 @@ export class ChatPaneRuntime extends ChatPaneLayoutRender {
       onSetReply: sessionDisabledBanner ? undefined : setReply,
       replyMessageAccess: catalogKey || selectedSessionArchived ? undefined : replyMessageAccess,
       onRewindMessage: selectedSessionArchived ? undefined : sessionActionCallbacks.onRewindMessage,
-      onForkMessage: sessionActionCallbacks.onForkMessage,
       agentsList: state.agentsList,
       currentAgentId,
       fullMessageAgentId: scopedAgentParamsForSession(state, state.sessionKey).agentId,
@@ -687,11 +687,11 @@ export class ChatPaneRuntime extends ChatPaneLayoutRender {
       resourceBasePath: state.resourceBasePath,
     };
     return {
+      providerReviewSource: { state, canWrite: canWriteProgressCard && !selectedSessionArchived },
       capabilityDialogs: catalogKey
         ? undefined
         : {
             read: () => this.composerCapabilities.dialogView(this.context, state, selectedSession),
-            revision: {},
           },
       layout: this.renderChatPaneLayout({
         state,

@@ -12,14 +12,16 @@ import { reconcileSessionTranscriptIndexInTransaction } from "../config/sessions
 import {
   AGENT_MEDIA_SCHEMA_VERSION,
   AGENT_STORAGE_SCHEMA_VERSION,
+  AGENT_TRAJECTORY_STORAGE_SCHEMA_VERSION,
   MEDIA_ROWS_MIGRATION_META_KEY,
 } from "../state/openclaw-agent-db-contract.js";
+import { agentEngineInput } from "../state/openclaw-agent-db-engine.js";
 import {
-  assertAgentDatabaseMaintenanceAuthority,
   invalidateOpenClawAgentDatabaseIntegrityBeforeMutation,
   renewAgentDatabaseMaintenanceAuthorityIfPresent,
 } from "../state/openclaw-agent-db-lease.js";
 import { agentDatabaseLifecycle } from "../state/openclaw-agent-db-lifecycle.js";
+import { assertAgentDatabaseMaintenanceAuthority } from "../state/openclaw-agent-db-maintenance-authority.js";
 import { withAgentDatabaseMaintenanceLease } from "../state/openclaw-agent-db-maintenance-lease.js";
 import {
   assertOpenClawAgentDatabaseForMaintenance,
@@ -30,6 +32,7 @@ import {
   registerOpenClawAgentDatabase,
   unregisterOpenClawAgentDatabase,
 } from "../state/openclaw-agent-db-registry.js";
+import { admitOpenClawAgentDatabaseSchema } from "../state/openclaw-agent-db-schema-admission.js";
 import {
   assertOpenClawAgentSchemaContains,
   assertSupportedAgentSchemaVersion,
@@ -112,31 +115,27 @@ async function migrateAgentDatabase(params: {
   migratedFromVersion?: number;
 }) {
   const database = openNodeSqliteDatabase(params.pathname);
+  const nativeVersionMigration = params.migratedFromVersion !== undefined && !agentEngineInput();
   const schemaWarnings: string[] = [];
   const schemaOptions = {
     agentId: params.agentId,
     path: params.pathname,
     env: params.env,
+    // Register with the admitted handle; registering after close revokes its proof.
+    register: true,
     onMigrationWarning: (warning: string) => schemaWarnings.push(warning),
   };
   const runSchema = (operation: Parameters<typeof runSqliteIntegrityOperationInWorker>[0]) =>
     runSqliteIntegrityOperationInWorker(operation, {
       busyTimeoutMs: OPENCLAW_SQLITE_BUSY_TIMEOUT_MS,
       signal: params.maintenance.signal,
-      beforeResume: () => {
-        assertAgentDatabaseMaintenanceAuthority(params.maintenance);
-        assertOpenClawAgentDatabaseOwner(database, params);
-        assertSupportedAgentSchemaVersion(database, params.pathname);
-      },
+      beforeResume: () => assertAgentDatabaseMaintenanceAuthority(params.maintenance),
     });
   try {
     configureSqliteMaintenanceCache(database);
     database.exec(`PRAGMA busy_timeout = ${OPENCLAW_SQLITE_BUSY_TIMEOUT_MS};`);
     enableNodeSqliteKyselyStatementCache(database);
-    let metadata = assertOpenClawAgentDatabaseOwner(database, {
-      agentId: params.agentId,
-      pathname: params.pathname,
-    });
+    let metadata = assertOpenClawAgentDatabaseOwner(database, params);
     assertSupportedAgentSchemaVersion(database, params.pathname);
     let userVersion = readSqliteUserVersion(database);
     if (userVersion < OPENCLAW_AGENT_SCHEMA_VERSION) {
@@ -159,6 +158,7 @@ async function migrateAgentDatabase(params: {
     ) {
       // Unchanged stores keep their clean-close proof. Explicit Doctor owns
       // content repairs; an update only prepares stores needing migration.
+      registerOpenClawAgentDatabase(schemaOptions);
       return {
         deferred: true,
         rewrittenSessions: 0,
@@ -169,7 +169,9 @@ async function migrateAgentDatabase(params: {
         finalVersion: userVersion,
       };
     }
-    invalidateOpenClawAgentDatabaseIntegrityBeforeMutation(params.pathname);
+    if (!nativeVersionMigration) {
+      invalidateOpenClawAgentDatabaseIntegrityBeforeMutation(params.pathname);
+    }
     const initialVersion = params.migratedFromVersion ?? userVersion;
     const prepareSchema = async () => {
       userVersion = readSqliteUserVersion(database);
@@ -177,10 +179,7 @@ async function migrateAgentDatabase(params: {
         await runSchema(
           migrateOpenClawAgentDatabaseToMediaPrerequisiteSchemaSteps(database, schemaOptions),
         );
-        metadata = assertOpenClawAgentDatabaseOwner(database, {
-          agentId: params.agentId,
-          pathname: params.pathname,
-        });
+        metadata = assertOpenClawAgentDatabaseOwner(database, params);
         userVersion = readSqliteUserVersion(database);
       }
       if (metadata.schemaVersion !== userVersion) {
@@ -195,6 +194,10 @@ async function migrateAgentDatabase(params: {
           // The version phase verified this file under the same Doctor custody.
           // Only ordinary additive maintenance remains before readers can open it.
           ensureOpenClawAgentSchema(database, params.agentId, params.pathname);
+          const admittedDb = nativeVersionMigration
+            ? admitOpenClawAgentDatabaseSchema(database, schemaOptions)
+            : undefined;
+          registerOpenClawAgentDatabase({ ...schemaOptions, admittedDb });
         } else {
           await runSchema(ensureOpenClawAgentDatabaseSchemaSteps(database, schemaOptions));
         }
@@ -336,6 +339,7 @@ async function migrateAgentDatabase(params: {
           const rewrittenTrajectoryRows = scanTrajectoryRows({
             database,
             pathname: params.pathname,
+            legacyTextStorage: userVersion < AGENT_TRAJECTORY_STORAGE_SCHEMA_VERSION,
             beforeRewrite,
           });
           if (mediaSchemaUpgrade) {
@@ -457,11 +461,8 @@ function migrateTranscriptArchive(
   if (!transformed.changed) {
     return false;
   }
-  const encoded = encodeArchiveContent(
-    transformed.content,
-    compressed ? "zstd" : "identity",
-    filePath,
-  );
+  const codec = compressed ? "zstd" : "identity";
+  const encoded = encodeArchiveContent(transformed.content, codec, filePath);
   options.beforeReplace?.();
   replaceFileAtomicSync({
     filePath,
@@ -608,8 +609,6 @@ export async function migrateLegacyMediaPersistence(
             }
             warnings.push(...result.warnings);
             recoverableWarningCount += result.warnings.length;
-            // A prior attempt may have committed the schema before publishing its registration.
-            registerOpenClawAgentDatabase({ agentId: entry.agentId, env, path: pathname });
             const schemaAdvanced = result.finalVersion > result.initialVersion;
             if (
               schemaAdvanced &&
